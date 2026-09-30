@@ -3,6 +3,7 @@ import { AppProvider, useAppContext } from './store';
 import { Dashboard } from './components/Dashboard';
 import { Scanner } from './components/Scanner';
 import { Registration } from './components/Registration';
+import { WelcomeDisplay } from './components/WelcomeDisplay';
 import { HealYouLogo } from './components/HealYouLogo';
 import {
   LayoutDashboard,
@@ -20,6 +21,11 @@ import {
   QrCode,
   UserCheck,
   Activity,
+  FolderKanban,
+  Plus,
+  Trash2,
+  ChevronDown,
+  Tv,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
@@ -39,20 +45,48 @@ function AppContent() {
   const {
     participants,
     config,
+    eventsList,
+    activeWorkshopId,
+    switchWorkshop,
+    createNewWorkshop,
+    deleteWorkshop,
     updateConfig,
     setSelectedParticipantId,
     checkIn,
     resetData,
     cloudUser,
+    isAdmin,
+    canManageParticipants,
     isCloudSyncing,
     connectCloud,
     disconnectCloud,
   } = useAppContext();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'scanner' | 'registration'>('dashboard');
+  const [activeTab, setActiveTab] = useState<
+    'dashboard' | 'scanner' | 'welcome' | 'registration'
+  >('dashboard');
   const [isEditingEvent, setIsEditingEvent] = useState(false);
+  const [isEventsMenuOpen, setIsEventsMenuOpen] = useState(false);
+  const [isCreatingNewEvent, setIsCreatingNewEvent] = useState(false);
   const [isConfirmingReset, setIsConfirmingReset] = useState(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
   const [focusField, setFocusField] = useState<'date' | 'location'>('date');
+
+  // New Event Form State
+  const [newEventName, setNewEventName] = useState('');
+  const [newEventDate, setNewEventDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [newEventTime, setNewEventTime] = useState('08:00');
+  const [newEventLocation, setNewEventLocation] = useState('Auditorium Psikologi, Gedung B Lt. 3');
+  const [copyExistingParticipants, setCopyExistingParticipants] = useState(false);
+
+  // If connected to Cloud with a non-admin email, restrict away from 'registration' (Buat QR)
+  useEffect(() => {
+    if (!canManageParticipants && activeTab === 'registration') {
+      setActiveTab('dashboard');
+    }
+    if (!canManageParticipants && isEditingEvent) {
+      setIsEditingEvent(false);
+    }
+  }, [canManageParticipants, activeTab, isEditingEvent]);
 
   const [draftName, setDraftName] = useState(config.name);
   const [draftDate, setDraftDate] = useState(config.date);
@@ -70,6 +104,7 @@ function AppContent() {
   const popoverRef = useRef<HTMLDivElement>(null);
 
   const openEditor = (field: 'date' | 'location') => {
+    setIsEventsMenuOpen(false);
     setDraftName(config.name);
     setDraftDate(config.date);
     setDraftLocation(config.location);
@@ -99,13 +134,15 @@ function AppContent() {
     const handleClickOutside = (e: MouseEvent) => {
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
         setIsEditingEvent(false);
+        setIsEventsMenuOpen(false);
+        setIsCreatingNewEvent(false);
       }
     };
-    if (isEditingEvent) {
+    if (isEditingEvent || isEventsMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isEditingEvent]);
+  }, [isEditingEvent, isEventsMenuOpen]);
 
   const handleSaveEvent = (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,6 +167,31 @@ function AppContent() {
     setIsEditingEvent(false);
   };
 
+  const handleCreateNewEventSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newEventName.trim()) return;
+
+    const cleanDate = newEventDate || format(new Date(), 'yyyy-MM-dd');
+    const cleanTime = newEventTime || '08:00';
+    const combined = new Date(`${cleanDate}T${cleanTime}:00`);
+    const isoStart = !isNaN(combined.getTime())
+      ? combined.toISOString()
+      : new Date().toISOString();
+
+    await createNewWorkshop({
+      name: newEventName.trim(),
+      date: cleanDate,
+      startTime: isoStart,
+      location: newEventLocation.trim() || config.location,
+      copyParticipants: copyExistingParticipants,
+    });
+
+    setNewEventName('');
+    setCopyExistingParticipants(false);
+    setIsCreatingNewEvent(false);
+    setIsEventsMenuOpen(false);
+  };
+
   // Live check-in feed & stats for the Kiosk Scanner View
   const kioskData = useMemo(() => {
     const total = participants.length;
@@ -150,24 +212,24 @@ function AppContent() {
   return (
     <div className="min-h-screen flex flex-col bg-[#faf9fe]">
       {/* Header */}
-      <header className="bg-white border-b border-purple-100 sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+      <header className="bg-white border-b border-purple-100 sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2 sm:gap-3">
           {/* Left: Brand + Desktop Navigation */}
-          <div className="flex items-center gap-4 xl:gap-6 min-w-0">
-            <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-3 xl:gap-6 min-w-0">
+            <div className="flex items-center gap-2 shrink-0">
               <HealYouLogo
                 customLogoUrl={config.customLogoUrl}
-                size={38}
-                className="rounded-lg shadow-2xs"
+                size={36}
+                className="rounded-lg shadow-2xs shrink-0"
               />
-              <div>
+              <div className="min-w-0">
                 <h1
-                  className="text-xl font-bold text-slate-900 leading-none"
+                  className="text-lg sm:text-xl font-bold text-slate-900 leading-none truncate"
                   style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
                 >
                   Heal You
                 </h1>
-                <p className="text-[11px] text-[#5e438f] font-medium mt-0.5">
+                <p className="text-[10px] sm:text-[11px] text-[#5e438f] font-medium mt-0.5 truncate">
                   Workshop Presensi
                 </p>
               </div>
@@ -203,35 +265,93 @@ function AppContent() {
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab('registration')}
+                onClick={() => setActiveTab('welcome')}
                 className={cn(
                   'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
-                  activeTab === 'registration'
+                  activeTab === 'welcome'
                     ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
                     : 'text-slate-600 hover:text-slate-900'
                 )}
+                title="Mode Layar Sambutan Penuh untuk TV / Proyektor"
               >
-                <UserPlus className="w-4 h-4 text-[#5e438f]" />
-                Kartu Pengenal &amp; Buat QR
+                <Tv className="w-4 h-4 text-[#5e438f]" />
+                Layar TV
               </button>
+              {canManageParticipants && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('registration')}
+                  className={cn(
+                    'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
+                    activeTab === 'registration'
+                      ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  )}
+                >
+                  <UserPlus className="w-4 h-4 text-[#5e438f]" />
+                  Kartu Pengenal &amp; Buat QR
+                </button>
+              )}
             </nav>
           </div>
 
-          {/* Right: Unified Schedule Capsule, Cloud Sync, Reset Data */}
+          {/* Right: Multi-Event Switcher, Schedule Capsule, Cloud Sync, Reset Data */}
           <div
             ref={popoverRef}
-            className="relative flex items-center gap-2 text-sm text-slate-600 shrink-0"
+            className="relative flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 text-sm text-slate-600"
           >
+            {/* Multi-Event Switcher Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsEditingEvent(false);
+                setIsCreatingNewEvent(false);
+                setIsEventsMenuOpen((prev) => !prev);
+              }}
+              className={cn(
+                'flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-colors cursor-pointer shrink-0',
+                isEventsMenuOpen
+                  ? 'bg-[#5e438f] text-white border-[#5e438f]'
+                  : 'bg-purple-50/80 hover:bg-purple-100/80 text-[#4c3575] border-purple-200/80'
+              )}
+              title="Pilih atau buat acara workshop baru (Riwayat Multi-Acara)"
+            >
+              <FolderKanban className="w-3.5 h-3.5 shrink-0" />
+              <span className="max-w-[90px] sm:max-w-[150px] truncate">{config.name}</span>
+              <span
+                className={cn(
+                  'px-1.5 py-0.2 rounded text-[10px] font-bold',
+                  isEventsMenuOpen ? 'bg-white/20 text-white' : 'bg-white text-[#5e438f]'
+                )}
+              >
+                {eventsList.length}
+              </span>
+              <ChevronDown className="w-3.5 h-3.5 opacity-75 shrink-0" />
+            </button>
+
             {/* Unified Interactive Event Info Capsule */}
-            <div className="flex items-center bg-slate-50 hover:bg-purple-50/60 border border-slate-200/80 hover:border-purple-200 rounded-xl p-0.5 transition-colors">
+            <div
+              className={cn(
+                'hidden sm:flex items-center bg-slate-50 border border-slate-200/80 rounded-xl p-0.5 transition-colors',
+                canManageParticipants && 'hover:bg-purple-50/60 hover:border-purple-200'
+              )}
+            >
               <button
                 type="button"
-                onClick={() => openEditor('date')}
-                className="group flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-left cursor-pointer"
-                title="Klik untuk mengubah tanggal & jam mulai workshop"
+                disabled={!canManageParticipants}
+                onClick={() => canManageParticipants && openEditor('date')}
+                className={cn(
+                  'group flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-left',
+                  canManageParticipants ? 'cursor-pointer' : 'cursor-default'
+                )}
+                title={
+                  canManageParticipants
+                    ? 'Klik untuk mengubah tanggal & jam mulai workshop'
+                    : 'Jadwal Workshop'
+                }
               >
                 <Calendar className="w-3.5 h-3.5 text-[#5e438f] shrink-0" />
-                <span className="font-medium text-slate-700 group-hover:text-[#2b1b47] text-xs whitespace-nowrap">
+                <span className="font-medium text-slate-700 text-xs whitespace-nowrap">
                   {formatSafeDate(config.date, 'dd MMM yyyy')}
                 </span>
               </button>
@@ -240,34 +360,56 @@ function AppContent() {
 
               <button
                 type="button"
-                onClick={() => openEditor('location')}
-                className="group hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-left cursor-pointer max-w-[190px]"
-                title="Klik untuk mengubah tempat workshop"
+                disabled={!canManageParticipants}
+                onClick={() => canManageParticipants && openEditor('location')}
+                className={cn(
+                  'group hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-left max-w-[175px]',
+                  canManageParticipants ? 'cursor-pointer' : 'cursor-default'
+                )}
+                title={
+                  canManageParticipants ? 'Klik untuk mengubah tempat workshop' : config.location
+                }
               >
                 <MapPin className="w-3.5 h-3.5 text-[#5e438f] shrink-0" />
-                <span className="font-medium text-slate-700 group-hover:text-[#2b1b47] text-xs truncate">
+                <span className="font-medium text-slate-700 text-xs truncate">
                   {config.location}
                 </span>
-                <Pencil className="w-3 h-3 text-slate-400 group-hover:text-[#5e438f] shrink-0 ml-0.5" />
+                {canManageParticipants && (
+                  <Pencil className="w-3 h-3 text-slate-400 group-hover:text-[#5e438f] shrink-0 ml-0.5" />
+                )}
               </button>
             </div>
 
             {/* Cloud Real-Time Sync Control */}
             {cloudUser ? (
-              <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200/90 text-emerald-800 px-2.5 py-1.5 rounded-xl text-xs font-medium shrink-0">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <div
+                className={cn(
+                  'flex items-center gap-1.5 border px-2.5 py-1.5 rounded-xl text-xs font-medium shrink-0',
+                  isAdmin
+                    ? 'bg-emerald-50 border-emerald-200/90 text-emerald-800'
+                    : 'bg-purple-50 border-purple-200/90 text-[#4c3575]'
+                )}
+                title={
+                  isAdmin
+                    ? `Admin (${cloudUser.email}) - Akses Penuh`
+                    : `Panitia (${cloudUser.email}) - Akses Dashboard & Scanner QR`
+                }
+              >
                 <span
-                  className="hidden 2xl:inline max-w-[130px] truncate"
-                  title={cloudUser.email || ''}
-                >
-                  {cloudUser.email || 'Cloud Aktif'}
+                  className={cn(
+                    'w-2 h-2 rounded-full animate-pulse',
+                    isAdmin ? 'bg-emerald-500' : 'bg-[#5e438f]'
+                  )}
+                />
+                <span className="font-semibold">{isAdmin ? 'Admin' : 'Panitia'}</span>
+                <span className="hidden 2xl:inline max-w-[120px] truncate opacity-85">
+                  · {cloudUser.email}
                 </span>
-                <span className="2xl:hidden">Cloud Aktif</span>
                 <button
                   type="button"
                   onClick={() => void disconnectCloud()}
                   title="Putuskan sinkronisasi Cloud (Keluar)"
-                  className="ml-0.5 p-0.5 text-emerald-700 hover:text-rose-600 rounded transition-colors cursor-pointer"
+                  className="ml-0.5 p-0.5 hover:text-rose-600 rounded transition-colors cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
@@ -293,22 +435,233 @@ function AppContent() {
               </button>
             )}
 
-            {/* Reset Data Button */}
-            <button
-              type="button"
-              onClick={() => setIsConfirmingReset(true)}
-              className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-rose-700 transition-colors bg-slate-100 hover:bg-rose-50 px-2.5 py-1.5 rounded-xl cursor-pointer shrink-0"
-              title="Kembalikan data peserta & acara ke kondisi awal"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Reset</span>
-            </button>
+            {/* Reset Data Button (Only visible when canManageParticipants is true) */}
+            {canManageParticipants && (
+              <button
+                type="button"
+                onClick={() => setIsConfirmingReset(true)}
+                className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-rose-700 transition-colors bg-slate-100 hover:bg-rose-50 px-2.5 py-1.5 rounded-xl cursor-pointer shrink-0"
+                title="Kembalikan data peserta & acara saat ini ke kondisi awal"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Reset</span>
+              </button>
+            )}
 
-            {/* Popover Editor for Date & Location */}
+            {/* Popover 1: Multi-Event Manager & History Switcher */}
+            {isEventsMenuOpen && (
+              <div className="fixed inset-x-3 top-16 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 w-auto sm:w-96 bg-white rounded-2xl shadow-xl border border-purple-100 p-4 z-50 text-slate-900">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Daftar &amp; Riwayat Acara Workshop
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Pilih acara untuk memuat peserta &amp; presensi masing-masing sesi
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEventsMenuOpen(false);
+                      setIsCreatingNewEvent(false);
+                    }}
+                    className="p-1 text-slate-400 hover:text-slate-600 rounded-md cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {!isCreatingNewEvent ? (
+                  <>
+                    <div className="mt-3 max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-xl">
+                      {eventsList.map((ev) => {
+                        const isCurrent = ev.workshopId === activeWorkshopId;
+                        return (
+                          <div
+                            key={ev.workshopId}
+                            className={cn(
+                              'p-3 flex items-center justify-between gap-2 transition-colors',
+                              isCurrent ? 'bg-purple-50/70' : 'hover:bg-slate-50'
+                            )}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                switchWorkshop(ev.workshopId);
+                                setIsEventsMenuOpen(false);
+                              }}
+                              className="flex-1 min-w-0 text-left cursor-pointer"
+                            >
+                              <div className="flex items-center gap-2">
+                                <p
+                                  className={cn(
+                                    'text-xs font-semibold truncate',
+                                    isCurrent ? 'text-[#2b1b47]' : 'text-slate-800'
+                                  )}
+                                >
+                                  {ev.config.name}
+                                </p>
+                                {isCurrent && (
+                                  <span className="px-1.5 py-0.5 text-[10px] font-bold bg-[#5e438f] text-white rounded shrink-0">
+                                    Aktif
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                                {formatSafeDate(ev.config.date, 'dd MMM yyyy')} ·{' '}
+                                {ev.config.location}
+                              </p>
+                            </button>
+
+                            {canManageParticipants && eventsList.length > 1 && !isCurrent && (
+                              <button
+                                type="button"
+                                onClick={() => void deleteWorkshop(ev.workshopId)}
+                                title="Hapus acara ini dari riwayat"
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {canManageParticipants && (
+                      <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEditor('date')}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                        >
+                          <Pencil className="w-3.5 h-3.5 text-[#5e438f]" />
+                          Edit Acara Aktif
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsCreatingNewEvent(true)}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-[#5e438f] hover:bg-[#4c3575] text-white rounded-xl transition-colors cursor-pointer shadow-2xs"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Buat Acara Baru
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <form onSubmit={handleCreateNewEventSubmit} className="mt-3 space-y-3">
+                    <div>
+                      <label
+                        htmlFor="new-event-name"
+                        className="block text-xs font-medium text-slate-700 mb-1"
+                      >
+                        Nama Acara Workshop Baru
+                      </label>
+                      <input
+                        id="new-event-name"
+                        type="text"
+                        required
+                        value={newEventName}
+                        onChange={(e) => setNewEventName(e.target.value)}
+                        placeholder="Contoh: Batch 2: Mindfulness & Regulasi Emosi"
+                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label
+                          htmlFor="new-event-date"
+                          className="block text-xs font-medium text-slate-700 mb-1"
+                        >
+                          Tanggal
+                        </label>
+                        <input
+                          id="new-event-date"
+                          type="date"
+                          required
+                          value={newEventDate}
+                          onChange={(e) => setNewEventDate(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="new-event-time"
+                          className="block text-xs font-medium text-slate-700 mb-1"
+                        >
+                          Jam Mulai
+                        </label>
+                        <input
+                          id="new-event-time"
+                          type="time"
+                          required
+                          value={newEventTime}
+                          onChange={(e) => setNewEventTime(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="new-event-loc"
+                        className="block text-xs font-medium text-slate-700 mb-1"
+                      >
+                        Tempat / Lokasi
+                      </label>
+                      <input
+                        id="new-event-loc"
+                        type="text"
+                        required
+                        value={newEventLocation}
+                        onChange={(e) => setNewEventLocation(e.target.value)}
+                        placeholder="Contoh: Auditorium Psikologi Lt. 3"
+                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                      />
+                    </div>
+
+                    <label className="flex items-start gap-2 pt-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={copyExistingParticipants}
+                        onChange={(e) => setCopyExistingParticipants(e.target.checked)}
+                        className="mt-0.5 rounded border-slate-300 text-[#5e438f] focus:ring-purple-400"
+                      />
+                      <span className="text-xs text-slate-600 leading-snug">
+                        Salin daftar peserta dari acara saat ini (status kehadiran di-reset ke{' '}
+                        <strong>Belum Hadir</strong>)
+                      </span>
+                    </label>
+
+                    <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsCreatingNewEvent(false)}
+                        className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                      >
+                        Kembali
+                      </button>
+                      <button
+                        type="submit"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-[#5e438f] hover:bg-[#4c3575] text-white rounded-lg transition-colors cursor-pointer"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        Simpan &amp; Buka Acara
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {/* Popover 2: Editor for Active Event Date & Location */}
             {isEditingEvent && (
               <form
                 onSubmit={handleSaveEvent}
-                className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-lg border border-purple-100 p-4 z-50 text-slate-900"
+                className="fixed inset-x-3 top-16 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 w-auto sm:w-96 bg-white rounded-2xl shadow-lg border border-purple-100 p-4 z-50 text-slate-900"
               >
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <h3 className="text-sm font-semibold text-slate-900">
@@ -436,50 +789,77 @@ function AppContent() {
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex gap-6 flex-col">
         {/* Mobile/Tablet Tabs Navigation */}
-        <div className="flex lg:hidden bg-white p-1 rounded-xl shadow-xs border border-purple-100 w-full max-w-md mx-auto">
+        <div
+          className={cn(
+            'grid lg:hidden gap-1.5 bg-white p-1.5 rounded-xl shadow-xs border border-purple-100 w-full max-w-lg mx-auto',
+            canManageParticipants ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'
+          )}
+        >
           <button
             type="button"
             onClick={() => setActiveTab('dashboard')}
             className={cn(
-              'flex-1 flex items-center justify-center gap-1.5 py-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer',
+              'flex items-center justify-center gap-1.5 py-2 px-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer truncate',
               activeTab === 'dashboard'
                 ? 'bg-purple-50 text-[#4c3575] font-semibold'
                 : 'text-slate-600 hover:bg-slate-50'
             )}
           >
-            <LayoutDashboard className="w-4 h-4 text-[#5e438f]" />
-            Dashboard
+            <LayoutDashboard className="w-4 h-4 text-[#5e438f] shrink-0" />
+            <span className="truncate">Dashboard</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('scanner')}
             className={cn(
-              'flex-1 flex items-center justify-center gap-1.5 py-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer',
+              'flex items-center justify-center gap-1.5 py-2 px-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer truncate',
               activeTab === 'scanner'
                 ? 'bg-purple-50 text-[#4c3575] font-semibold'
                 : 'text-slate-600 hover:bg-slate-50'
             )}
           >
             <CameraIcon />
-            Scanner QR
+            <span className="truncate">Scanner</span>
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('registration')}
+            onClick={() => setActiveTab('welcome')}
             className={cn(
-              'flex-1 flex items-center justify-center gap-1.5 py-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer',
-              activeTab === 'registration'
+              'flex items-center justify-center gap-1.5 py-2 px-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer truncate',
+              activeTab === 'welcome'
                 ? 'bg-purple-50 text-[#4c3575] font-semibold'
                 : 'text-slate-600 hover:bg-slate-50'
             )}
           >
-            <UserPlus className="w-4 h-4 text-[#5e438f]" />
-            Buat QR
+            <Tv className="w-4 h-4 text-[#5e438f] shrink-0" />
+            <span className="truncate">Layar TV</span>
           </button>
+          {canManageParticipants && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('registration')}
+              className={cn(
+                'flex items-center justify-center gap-1.5 py-2 px-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer truncate',
+                activeTab === 'registration'
+                  ? 'bg-purple-50 text-[#4c3575] font-semibold'
+                  : 'text-slate-600 hover:bg-slate-50'
+              )}
+            >
+              <UserPlus className="w-4 h-4 text-[#5e438f] shrink-0" />
+              <span className="truncate">Buat QR</span>
+            </button>
+          )}
         </div>
 
+        {/* VIEW 0: WELCOME DISPLAY MODE FOR TV / PROJECTOR */}
+        {activeTab === 'welcome' && (
+          <div className="flex-1 min-w-0">
+            <WelcomeDisplay onClose={() => setActiveTab('dashboard')} />
+          </div>
+        )}
+
         {/* VIEW 1: REGISTRATION & COUTURE ID CARD STUDIO */}
-        {activeTab === 'registration' && (
+        {activeTab === 'registration' && canManageParticipants && (
           <div className="flex-1 min-w-0">
             <Registration />
           </div>
@@ -490,10 +870,14 @@ function AppContent() {
           <div className="flex-1 flex flex-col lg:flex-row gap-6 items-stretch">
             <div className="flex-1 min-w-0">
               <Dashboard
-                onEditParticipant={(id) => {
-                  setSelectedParticipantId(id);
-                  setActiveTab('registration');
-                }}
+                onEditParticipant={
+                  canManageParticipants
+                    ? (id) => {
+                        setSelectedParticipantId(id);
+                        setActiveTab('registration');
+                      }
+                    : undefined
+                }
               />
             </div>
 
@@ -629,17 +1013,19 @@ function AppContent() {
                           </p>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedParticipantId(p.id);
-                            setActiveTab('registration');
-                          }}
-                          title="Lihat Kartu Pengenal"
-                          className="p-2 text-[#5e438f] bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors cursor-pointer"
-                        >
-                          <QrCode className="w-4 h-4" />
-                        </button>
+                        {canManageParticipants && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedParticipantId(p.id);
+                              setActiveTab('registration');
+                            }}
+                            title="Lihat Kartu Pengenal"
+                            className="p-2 text-[#5e438f] bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <QrCode className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))
@@ -691,10 +1077,10 @@ function AppContent() {
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-slate-900">
-                    Reset Seluruh Data ke Awal?
+                    Reset Data Acara Ini ke Awal?
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Tindakan ini tidak dapat dibatalkan
+                    Tindakan ini hanya mereset acara yang sedang aktif ({config.name})
                   </p>
                 </div>
               </div>
@@ -708,8 +1094,8 @@ function AppContent() {
             </div>
 
             <p className="mt-4 text-sm text-slate-600 leading-relaxed">
-              Seluruh perubahan daftar peserta, status kehadiran <em>check-in</em>, serta pengaturan
-              acara workshop akan dikembalikan ke data bawaan awal.
+              Daftar peserta dan status kehadiran pada acara <strong>{config.name}</strong> akan
+              dikembalikan ke data bawaan awal. Acara lain di riwayat tidak akan terpengaruh.
             </p>
 
             <div className="mt-6 flex items-center justify-end gap-2.5">
@@ -729,7 +1115,7 @@ function AppContent() {
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-colors cursor-pointer shadow-2xs"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Ya, Reset Data
+                Ya, Reset Acara Ini
               </button>
             </div>
           </div>

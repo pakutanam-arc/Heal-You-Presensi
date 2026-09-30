@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import * as XLSX from 'xlsx';
 import { useAppContext } from '../store';
-import { AttendanceStatus } from '../types';
+import { AttendanceStatus, Participant } from '../types';
 import {
   UserPlus,
   Download,
@@ -18,11 +18,15 @@ import {
   Pencil,
   FileSpreadsheet,
   Layers,
+  MessageCircle,
+  Copy,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { buildWhatsAppUrl, buildWhatsAppMessage } from '../lib/whatsapp';
 import { format } from 'date-fns';
 import { HealYouLogo, HEAL_YOU_DATA_URI, loadLogoImage } from './HealYouLogo';
 import { BatchPrintModal } from './BatchPrintModal';
+import { WhatsAppBroadcastModal } from './WhatsAppBroadcastModal';
 
 function formatSafeDate(dateStr: string, pattern: string) {
   try {
@@ -147,6 +151,18 @@ export const Registration: React.FC = () => {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
+  const [isWaBroadcastOpen, setIsWaBroadcastOpen] = useState(false);
+  const [copiedWa, setCopiedWa] = useState(false);
+
+  const handleCopyWaMessage = async (p: Participant) => {
+    try {
+      await navigator.clipboard.writeText(buildWhatsAppMessage(p, config));
+      setCopiedWa(true);
+      window.setTimeout(() => setCopiedWa(false), 2500);
+    } catch {
+      // Ignore clipboard error
+    }
+  };
 
   const qrContainerRef = useRef<HTMLDivElement>(null);
   const editorPanelRef = useRef<HTMLDivElement>(null);
@@ -1151,7 +1167,7 @@ export const Registration: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-4">
+                <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <p className="text-xs text-slate-500">
                     Tips: Anda juga dapat mengklik langsung bagian teks pada gambar kartu di kanan untuk mengeditnya.
                   </p>
@@ -1574,31 +1590,46 @@ export const Registration: React.FC = () => {
                     setFormTab('edit');
                   }}
                   className={cn(
-                    'w-full text-left px-5 py-3.5 flex items-center justify-between gap-4 transition-colors cursor-pointer',
+                    'w-full text-left px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4 transition-colors cursor-pointer',
                     isSelected ? 'bg-purple-50/80' : 'hover:bg-slate-50'
                   )}
                 >
                   <div className="min-w-0">
                     <p
                       className={cn(
-                        'text-sm font-semibold truncate',
+                        'text-sm font-semibold break-words sm:truncate',
                         isSelected ? 'text-[#2b1b47]' : 'text-slate-900'
                       )}
                     >
                       {p.name}
                     </p>
-                    <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 truncate">
-                      <span className="font-mono tabular-nums font-medium text-[#6b4c8c]">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 mt-0.5">
+                      <span className="font-mono tabular-nums font-medium text-[#6b4c8c] shrink-0">
                         {p.id}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span>{p.role || 'Peserta Workshop'}</span>
                       <span aria-hidden="true">·</span>
-                      <span className="truncate">{p.institution}</span>
+                      <span className="truncate max-w-[200px] sm:max-w-[260px]">{p.institution}</span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <a
+                      href={buildWhatsAppUrl(p, config)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      title={
+                        p.phone
+                          ? `Kirim info tiket via WhatsApp (${p.phone})`
+                          : 'Kirim info tiket via WhatsApp'
+                      }
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/70 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <MessageCircle className="w-3 h-3" />
+                      Kirim WA
+                    </a>
                     <button
                       type="button"
                       onClick={(e) => {
@@ -1681,29 +1712,29 @@ export const Registration: React.FC = () => {
               </div>
 
               {/* Porcelain Sanctuary Sheet with Double Filigree Border */}
-              <div className="relative bg-white/90 backdrop-blur-md rounded-[26px] p-2.5 border border-white shadow-sm">
-                <div className="rounded-[20px] border border-[#b49ae6]/30 px-5 py-6 text-center flex flex-col items-center">
+              <div className="relative bg-white/90 backdrop-blur-md rounded-[26px] p-2 sm:p-2.5 border border-white shadow-sm">
+                <div className="rounded-[20px] border border-[#b49ae6]/30 px-3.5 sm:px-5 py-5 sm:py-6 text-center flex flex-col items-center">
                   {/* Participant Data Section (Click to edit participant) */}
                   <div
                     onClick={() => focusEditorSection('participant')}
                     title="Klik untuk mengubah data diri peserta"
-                    className="w-full cursor-pointer rounded-xl py-1 px-2 transition-colors hover:bg-purple-50/60"
+                    className="w-full cursor-pointer rounded-xl py-1 px-1 sm:px-2 transition-colors hover:bg-purple-50/60"
                   >
-                    <span className="text-[10px] font-semibold tracking-[0.24em] uppercase text-[#7c5bb0]">
+                    <span className="block text-[10px] font-semibold tracking-[0.2em] uppercase text-[#7c5bb0] break-words">
                       {displayParticipantRole}
                     </span>
 
                     <h3
-                      className="mt-1.5 text-[28px] sm:text-[31px] font-bold text-[#1f1235] leading-tight"
+                      className="mt-1.5 text-2xl sm:text-[31px] font-bold text-[#1f1235] leading-tight break-words"
                       style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
                     >
                       {displayParticipantName}
                     </h3>
 
-                    <p className="mt-1 text-[13px] font-medium text-[#4a3b69]">
+                    <p className="mt-1 text-xs sm:text-[13px] font-medium text-[#4a3b69] break-words">
                       {displayParticipantInst}
                     </p>
-                    <p className="mt-0.5 text-xs text-[#7c6f99]">
+                    <p className="mt-0.5 text-[11px] sm:text-xs text-[#7c6f99] break-all sm:break-words">
                       {displayParticipantEmail}
                       {displayParticipantPhone ? `  ·  ${displayParticipantPhone}` : ''}
                     </p>
@@ -1825,14 +1856,60 @@ export const Registration: React.FC = () => {
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setIsBatchModalOpen(true)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer"
-              >
-                <Layers className="w-4 h-4 text-[#5e438f]" />
-                Cetak / Unduh Semua Kartu Peserta ({participants.length} Kartu · Lembar A4)
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2.5">
+                <a
+                  href={buildWhatsAppUrl(selectedParticipant, config)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-2xs transition-colors cursor-pointer"
+                  title={
+                    selectedParticipant.phone
+                      ? `Buka chat WhatsApp ke ${selectedParticipant.phone}`
+                      : 'Kirim undangan & detail kartu via WhatsApp'
+                  }
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  1-Klik Kirim via WhatsApp
+                </a>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyWaMessage(selectedParticipant)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-medium text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
+                  title="Salin teks pesan undangan WhatsApp ke clipboard"
+                >
+                  {copiedWa ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      Teks Tersalin!
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      Salin Pesan WA
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsBatchModalOpen(true)}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer"
+                >
+                  <Layers className="w-4 h-4 text-[#5e438f]" />
+                  Cetak Semua ({participants.length} Kartu A4)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsWaBroadcastOpen(true)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
+                  title="Kirim ke semua nomor WhatsApp peserta secara beruntun"
+                >
+                  <MessageCircle className="w-4 h-4 text-teal-600" />
+                  Broadcast Semua WA
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1841,6 +1918,13 @@ export const Registration: React.FC = () => {
       <BatchPrintModal
         isOpen={isBatchModalOpen}
         onClose={() => setIsBatchModalOpen(false)}
+        participants={participants}
+        config={config}
+      />
+
+      <WhatsAppBroadcastModal
+        isOpen={isWaBroadcastOpen}
+        onClose={() => setIsWaBroadcastOpen(false)}
         participants={participants}
         config={config}
       />

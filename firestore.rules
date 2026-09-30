@@ -28,9 +28,15 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    // Tier 1 Admin: Strictly verified paku.tanam@gmail.com
+    function isAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'paku.tanam@gmail.com';
+    }
+
     // Validation Blueprint: Workshop
     function isValidWorkshop(data) {
       return data.keys().hasAll([
+          'workshopId',
           'ownerId',
           'name',
           'date',
@@ -44,6 +50,7 @@ service cloud.firestore {
           'updatedAt'
         ])
         && data.keys().hasOnly([
+          'workshopId',
           'ownerId',
           'name',
           'date',
@@ -56,6 +63,10 @@ service cloud.firestore {
           'createdAt',
           'updatedAt'
         ])
+        && data.workshopId is string
+        && data.workshopId.size() >= 1
+        && data.workshopId.size() <= 64
+        && data.workshopId.matches('^[a-zA-Z0-9_\\-]+$')
         && data.ownerId is string
         && data.ownerId.size() >= 1
         && data.ownerId.size() <= 128
@@ -124,7 +135,7 @@ service cloud.firestore {
         && data.id.matches('^[a-zA-Z0-9_\\-]+$')
         && data.workshopId is string
         && data.workshopId.size() >= 1
-        && data.workshopId.size() <= 128
+        && data.workshopId.size() <= 64
         && data.workshopId.matches('^[a-zA-Z0-9_\\-]+$')
         && data.ownerId is string
         && data.ownerId.size() >= 1
@@ -155,29 +166,30 @@ service cloud.firestore {
 
     // Collection: /workshops/{workshopId}
     match /workshops/{workshopId} {
-      allow get: if isSignedIn()
+      // Single-document get for verified staff and Admin (no collection list needed)
+      allow get: if isVerifiedUser()
         && isValidId(workshopId)
-        && workshopId == request.auth.uid
-        && existing().ownerId == request.auth.uid;
+        && (resource == null || existing().workshopId == workshopId || existing().ownerId == request.auth.uid || workshopId == 'main');
 
+      // Initial bootstrap of 'main' workshop or Admin creating a new workshop event
       allow create: if isVerifiedUser()
         && isValidId(workshopId)
-        && workshopId == request.auth.uid
         && isValidWorkshop(incoming())
+        && incoming().workshopId == workshopId
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+        && incoming().updatedAt == request.time
+        && (isAdmin() || workshopId == 'main');
 
-      allow update: if isVerifiedUser()
+      // Only Admin (paku.tanam@gmail.com) can update Workshop Config
+      allow update: if isAdmin()
         && isValidId(workshopId)
-        && workshopId == request.auth.uid
         && isValidWorkshop(incoming())
-        && existing().ownerId == request.auth.uid
-        && incoming().ownerId == existing().ownerId
-        && incoming().createdAt == existing().createdAt
+        && (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time)
         && incoming().updatedAt == request.time
         && (
-          // Action: Update Workshop Config
           incoming().diff(existing()).affectedKeys().hasOnly([
+            'workshopId',
+            'ownerId',
             'name',
             'date',
             'startTime',
@@ -186,76 +198,90 @@ service cloud.firestore {
             'tagline',
             'eventLabel',
             'customLogoUrl',
+            'createdAt',
             'updatedAt'
           ])
         );
 
-      allow delete: if isVerifiedUser()
-        && isValidId(workshopId)
-        && workshopId == request.auth.uid
-        && existing().ownerId == request.auth.uid;
+      allow delete: if isAdmin()
+        && isValidId(workshopId);
 
       // Subcollection: /workshops/{workshopId}/participants/{participantId}
       match /participants/{participantId} {
-        allow get: if isSignedIn()
+        allow get: if isVerifiedUser()
           && isValidId(workshopId)
           && isValidId(participantId)
-          && workshopId == request.auth.uid
-          && existing().ownerId == request.auth.uid
-          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid;
+          && (resource == null || existing().workshopId == workshopId);
 
-        // Secure List Query: No get()/exists() inside list, strictly bound to ownerId
-        allow list: if isSignedIn()
-          && workshopId == request.auth.uid
-          && existing().ownerId == request.auth.uid;
+        // Secure List Query: Bound to exact equality workshopId == workshopId
+        allow list: if isVerifiedUser()
+          && existing().workshopId == workshopId;
 
+        // Only Admin can create new participants (or initial atomic bootstrap when 'main' does not exist yet)
         allow create: if isVerifiedUser()
           && isValidId(workshopId)
           && isValidId(participantId)
-          && workshopId == request.auth.uid
           && isValidParticipant(incoming())
           && incoming().id == participantId
           && incoming().workshopId == workshopId
           && incoming().createdAt == request.time
           && incoming().updatedAt == request.time
-          && exists(/databases/$(database)/documents/workshops/$(workshopId))
-          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid;
+          && (
+            isAdmin()
+            || (
+              workshopId == 'main'
+              && !exists(/databases/$(database)/documents/workshops/main)
+              && getAfter(/databases/$(database)/documents/workshops/main).data.workshopId == 'main'
+            )
+          );
 
+        // Tiered Update Logic:
+        // - Tier 1 (Admin): Can edit participant profile fields, reset, or check-in
+        // - Tier 2 (Verified Staff): Can ONLY update attendance check-in status & checkInTime
         allow update: if isVerifiedUser()
           && isValidId(workshopId)
           && isValidId(participantId)
-          && workshopId == request.auth.uid
-          && isValidParticipant(incoming())
-          && existing().ownerId == request.auth.uid
-          && incoming().ownerId == existing().ownerId
           && incoming().workshopId == existing().workshopId
           && incoming().id == existing().id
-          && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid
+          && exists(/databases/$(database)/documents/workshops/$(workshopId))
           && (
-            // Action: Check-in or Status Change
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'checkInTime', 'updatedAt'])
+            // Tier 2 (All Verified Staff & Admin): Check-in or Undo Check-in only
+            (
+              incoming().ownerId == existing().ownerId
+              && incoming().createdAt == existing().createdAt
+              && incoming().status is string
+              && (incoming().status == 'PENDING' || incoming().status == 'PRESENT' || incoming().status == 'LATE')
+              && incoming().checkInTime is string
+              && incoming().checkInTime.size() <= 64
+              && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'checkInTime', 'updatedAt'])
+            )
             ||
-            // Action: Edit Participant Profile & Status
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'name',
-              'email',
-              'institution',
-              'role',
-              'phone',
-              'status',
-              'checkInTime',
-              'updatedAt'
-            ])
+            // Tier 1 (Admin Only): Full participant profile edit or reset
+            (
+              isAdmin()
+              && isValidParticipant(incoming())
+              && (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time)
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'ownerId',
+                'name',
+                'email',
+                'institution',
+                'role',
+                'phone',
+                'status',
+                'checkInTime',
+                'createdAt',
+                'updatedAt'
+              ])
+            )
           );
 
-        allow delete: if isVerifiedUser()
+        // Only Admin can delete participants
+        allow delete: if isAdmin()
           && isValidId(workshopId)
           && isValidId(participantId)
-          && workshopId == request.auth.uid
-          && existing().ownerId == request.auth.uid
-          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid;
+          && exists(/databases/$(database)/documents/workshops/$(workshopId));
       }
     }
   }

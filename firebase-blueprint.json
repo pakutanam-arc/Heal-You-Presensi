@@ -2,76 +2,83 @@
   "entities": {
     "Workshop": {
       "title": "Workshop",
-      "description": "Configuration and metadata for a psychology workshop owned by an organizer.",
+      "description": "Configuration and branding metadata for the shared psychology workshop event.",
       "type": "object",
       "properties": {
+        "workshopId": {
+          "type": "string",
+          "description": "Unique identifier of the workshop workspace (e.g. 'main').",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
         "ownerId": {
           "type": "string",
-          "description": "UID of the authenticated organizer who owns this workshop.",
+          "description": "UID of the user who initialized the workshop document.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "name": {
           "type": "string",
-          "description": "Title of the psychology workshop.",
+          "description": "Full title of the workshop event.",
           "minLength": 1,
           "maxLength": 200
         },
         "date": {
           "type": "string",
-          "description": "Workshop date in YYYY-MM-DD format.",
+          "description": "Date of the workshop in YYYY-MM-DD format.",
           "minLength": 1,
           "maxLength": 40
         },
         "startTime": {
           "type": "string",
-          "description": "ISO-8601 timestamp string for workshop start time.",
+          "description": "ISO 8601 timestamp for the workshop start time.",
           "minLength": 1,
           "maxLength": 64
         },
         "location": {
           "type": "string",
-          "description": "Venue or room location for the workshop.",
+          "description": "Venue or room location of the workshop.",
           "minLength": 1,
           "maxLength": 200
         },
         "organizer": {
           "type": "string",
-          "description": "Organizer subtitle displayed on the ID card.",
+          "description": "Organizer name shown on ID cards.",
           "minLength": 1,
           "maxLength": 120
         },
         "tagline": {
           "type": "string",
-          "description": "Tagline displayed on the ID card.",
+          "description": "Brand tagline displayed beneath the logo.",
           "minLength": 1,
           "maxLength": 120
         },
         "eventLabel": {
           "type": "string",
-          "description": "Event category label displayed on the ID card.",
+          "description": "Pill label displayed above the workshop title on ID cards.",
           "minLength": 1,
           "maxLength": 120
         },
         "customLogoUrl": {
           "type": "string",
-          "description": "Optional data URI or URL for custom card logo.",
-          "minLength": 0,
+          "description": "Optional custom logo data URL or image URL.",
           "maxLength": 350000
         },
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the workshop document was created."
+          "description": "Server timestamp when the workshop record was created."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the workshop document was last updated."
+          "description": "Server timestamp when the workshop record was last updated."
         }
       },
       "required": [
+        "workshopId",
         "ownerId",
         "name",
         "date",
@@ -87,80 +94,78 @@
     },
     "Participant": {
       "title": "Participant",
-      "description": "Workshop participant registration and real-time attendance status.",
+      "description": "Registered workshop participant and real-time attendance status.",
       "type": "object",
       "properties": {
         "id": {
           "type": "string",
-          "description": "Participant attendance code (e.g., HY-001).",
+          "description": "Participant attendance ID (e.g. HY-001).",
           "minLength": 1,
           "maxLength": 64,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "workshopId": {
           "type": "string",
-          "description": "Parent workshop ID (matches organizer UID).",
+          "description": "ID of the parent workshop document ('main').",
           "minLength": 1,
-          "maxLength": 128,
+          "maxLength": 64,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "ownerId": {
           "type": "string",
-          "description": "UID of the authenticated organizer who owns this participant record.",
+          "description": "UID of the user who created the participant record.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "name": {
           "type": "string",
-          "description": "Full name and academic/clinical title of the participant.",
+          "description": "Full name and academic/professional titles of the participant.",
           "minLength": 1,
           "maxLength": 160
         },
         "email": {
           "type": "string",
-          "description": "Participant email address.",
+          "description": "Email address of the participant.",
           "minLength": 1,
           "maxLength": 160
         },
         "institution": {
           "type": "string",
-          "description": "Participant institution, university, or clinic affiliation.",
+          "description": "Institution, university, hospital, or clinic of the participant.",
           "minLength": 1,
           "maxLength": 160
         },
         "role": {
           "type": "string",
-          "description": "Participant role or category (e.g., Peserta Workshop, Pembicara).",
+          "description": "Role label shown on the ID card (e.g. Peserta Workshop).",
           "minLength": 1,
           "maxLength": 100
         },
         "phone": {
           "type": "string",
-          "description": "Participant WhatsApp or contact number.",
-          "minLength": 0,
+          "description": "WhatsApp / mobile phone number of the participant.",
           "maxLength": 60
         },
         "status": {
           "type": "string",
-          "description": "Attendance status of the participant.",
+          "description": "Real-time attendance status of the participant.",
           "enum": ["PENDING", "PRESENT", "LATE"]
         },
         "checkInTime": {
           "type": "string",
-          "description": "ISO-8601 check-in timestamp string (empty string if PENDING).",
-          "minLength": 0,
+          "description": "ISO 8601 timestamp of when the participant checked in, or empty string if PENDING.",
           "maxLength": 64
         },
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the participant record was created."
+          "description": "Server timestamp when the participant was created."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the participant record was last updated."
+          "description": "Server timestamp when the participant was last updated."
         }
       },
       "required": [
@@ -184,13 +189,13 @@
       "schema": {
         "$ref": "#/entities/Workshop"
       },
-      "description": "Stores workshop configuration owned by the authenticated organizer (where workshopId == ownerId)."
+      "description": "Stores shared workshop configuration and branding metadata."
     },
     "/workshops/{workshopId}/participants/{participantId}": {
       "schema": {
         "$ref": "#/entities/Participant"
       },
-      "description": "Stores participant registration and check-in records under a specific workshop."
+      "description": "Stores participants belonging to a workshop for real-time multi-device check-in synchronization."
     }
   }
 }

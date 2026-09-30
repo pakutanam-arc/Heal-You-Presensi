@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useAppContext } from '../store';
 import { AttendanceStatus } from '../types';
 import { ExportButton } from './ExportButton';
+import { WhatsAppBroadcastModal } from './WhatsAppBroadcastModal';
 import {
   Users,
   CheckCircle2,
@@ -15,9 +16,11 @@ import {
   TrendingUp,
   Zap,
   Timer,
+  MessageCircle,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playScanBeep } from '../lib/sound';
+import { buildWhatsAppUrl } from '../lib/whatsapp';
 import { format, differenceInMinutes } from 'date-fns';
 import { motion } from 'motion/react';
 
@@ -31,6 +34,7 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [sortBy, setSortBy] = useState<SortOption>('id');
+  const [isWaBroadcastOpen, setIsWaBroadcastOpen] = useState(false);
 
   const stats = useMemo(() => {
     const total = participants.length;
@@ -375,7 +379,7 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
                 </span>
               </p>
             </div>
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
               <div className="relative flex-1 sm:flex-initial">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
@@ -386,7 +390,18 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
                   className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs sm:text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400 w-full sm:w-64"
                 />
               </div>
-              <ExportButton />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsWaBroadcastOpen(true)}
+                  className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs sm:text-sm font-semibold transition-colors cursor-pointer shrink-0"
+                  title="Kirim pesan tiket & pengingat ke seluruh nomor WhatsApp peserta secara beruntun"
+                >
+                  <MessageCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Broadcast WA</span>
+                </button>
+                <ExportButton />
+              </div>
             </div>
           </div>
 
@@ -536,6 +551,21 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
                         </button>
                       )}
 
+                      <a
+                        href={buildWhatsAppUrl(p, config)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={
+                          p.phone
+                            ? `Kirim info tiket & pengingat ke WhatsApp (${p.phone})`
+                            : 'Kirim info tiket via WhatsApp'
+                        }
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/70 rounded-lg transition-colors cursor-pointer"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        WA
+                      </a>
+
                       {onEditParticipant && (
                         <button
                           type="button"
@@ -562,6 +592,13 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
           </table>
         </div>
       </div>
+
+      <WhatsAppBroadcastModal
+        isOpen={isWaBroadcastOpen}
+        onClose={() => setIsWaBroadcastOpen(false)}
+        participants={participants}
+        config={config}
+      />
     </div>
   );
 };

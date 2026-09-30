@@ -13,6 +13,7 @@ import {
   updateDoc,
   deleteDoc,
   getDoc,
+  getDocs,
   writeBatch,
   serverTimestamp,
 } from 'firebase/firestore';
@@ -25,9 +26,35 @@ import {
   signOutFromCloud,
 } from './firebase';
 
+export const ADMIN_EMAIL = 'paku.tanam@gmail.com';
+const DEFAULT_WORKSHOP_ID = 'main';
+
+export interface WorkshopEventItem {
+  workshopId: string;
+  config: WorkshopConfig;
+  participantCount?: number;
+}
+
+interface LocalSessionRecord {
+  workshopId: string;
+  config: WorkshopConfig;
+  participants: Participant[];
+}
+
 interface AppState {
   participants: Participant[];
   config: WorkshopConfig;
+  eventsList: WorkshopEventItem[];
+  activeWorkshopId: string;
+  switchWorkshop: (workshopId: string) => void;
+  createNewWorkshop: (params: {
+    name: string;
+    date: string;
+    startTime: string;
+    location: string;
+    copyParticipants?: boolean;
+  }) => Promise<string>;
+  deleteWorkshop: (workshopId: string) => Promise<void>;
   selectedParticipantId: string;
   setSelectedParticipantId: (id: string) => void;
   checkIn: (id: string) => { success: boolean; message: string; participant?: Participant };
@@ -54,6 +81,8 @@ interface AppState {
   updateConfig: (updates: Partial<WorkshopConfig>) => void;
   resetData: () => void;
   cloudUser: User | null;
+  isAdmin: boolean;
+  canManageParticipants: boolean;
   isCloudSyncing: boolean;
   connectCloud: () => Promise<void>;
   disconnectCloud: () => Promise<void>;
@@ -73,84 +102,160 @@ const clampStr = (val: string | undefined, max: number, fallback = ''): string =
   return clean.slice(0, max);
 };
 
-export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [participants, setParticipants] = useState<Participant[]>(() => {
-    const saved = localStorage.getItem('workshop_participants');
-    if (saved) {
-      try {
-        const parsed: Participant[] = JSON.parse(saved);
-        return parsed.map((p) => ({ ...p, id: migrateId(p.id) }));
-      } catch {
-        return INITIAL_PARTICIPANTS;
+function loadInitialSessions(): Record<string, LocalSessionRecord> {
+  const savedSessions = localStorage.getItem('workshop_sessions_v1');
+  if (savedSessions) {
+    try {
+      const parsed = JSON.parse(savedSessions) as Record<string, LocalSessionRecord>;
+      if (parsed && Object.keys(parsed).length > 0) {
+        return parsed;
       }
+    } catch {
+      // Fallback below
     }
-    return INITIAL_PARTICIPANTS;
+  }
+
+  // Migrate legacy single-event localStorage
+  let initialParticipants = INITIAL_PARTICIPANTS;
+  const savedPart = localStorage.getItem('workshop_participants');
+  if (savedPart) {
+    try {
+      const parsed: Participant[] = JSON.parse(savedPart);
+      initialParticipants = parsed.map((p) => ({ ...p, id: migrateId(p.id) }));
+    } catch {
+      initialParticipants = INITIAL_PARTICIPANTS;
+    }
+  }
+
+  let initialConfig = WORKSHOP_CONFIG;
+  const savedCfg = localStorage.getItem('workshop_config');
+  if (savedCfg) {
+    try {
+      const parsed = JSON.parse(savedCfg);
+      if (!parsed.organizer || parsed.organizer === 'Heal You Psychology Center') {
+        parsed.organizer = 'Muslimah Healing Journey';
+      }
+      initialConfig = { ...WORKSHOP_CONFIG, ...parsed };
+    } catch {
+      initialConfig = WORKSHOP_CONFIG;
+    }
+  }
+
+  return {
+    [DEFAULT_WORKSHOP_ID]: {
+      workshopId: DEFAULT_WORKSHOP_ID,
+      config: initialConfig,
+      participants: initialParticipants,
+    },
+  };
+}
+
+export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [localSessions, setLocalSessions] = useState<Record<string, LocalSessionRecord>>(() =>
+    loadInitialSessions()
+  );
+
+  const [activeWorkshopId, setActiveWorkshopId] = useState<string>(() => {
+    const savedId = localStorage.getItem('active_workshop_id');
+    const initialMap = loadInitialSessions();
+    if (savedId && initialMap[savedId]) {
+      return savedId;
+    }
+    return Object.keys(initialMap)[0] || DEFAULT_WORKSHOP_ID;
   });
 
-  const [selectedParticipantId, setSelectedParticipantId] = useState<string>(() => {
-    const saved = localStorage.getItem('workshop_participants');
-    if (saved) {
-      try {
-        const list: Participant[] = JSON.parse(saved);
-        return list[0]?.id ? migrateId(list[0].id) : 'HY-001';
-      } catch {
-        return 'HY-001';
-      }
-    }
-    return INITIAL_PARTICIPANTS[0]?.id || 'HY-001';
+  const [participants, setParticipants] = useState<Participant[]>(() => {
+    const initialMap = loadInitialSessions();
+    const active = initialMap[activeWorkshopId] || initialMap[DEFAULT_WORKSHOP_ID];
+    return active ? active.participants : INITIAL_PARTICIPANTS;
   });
 
   const [config, setConfig] = useState<WorkshopConfig>(() => {
-    const saved = localStorage.getItem('workshop_config');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (!parsed.organizer || parsed.organizer === 'Heal You Psychology Center') {
-          parsed.organizer = 'Muslimah Healing Journey';
-        }
-        return { ...WORKSHOP_CONFIG, ...parsed };
-      } catch {
-        return WORKSHOP_CONFIG;
-      }
-    }
-    return WORKSHOP_CONFIG;
+    const initialMap = loadInitialSessions();
+    const active = initialMap[activeWorkshopId] || initialMap[DEFAULT_WORKSHOP_ID];
+    return active ? active.config : WORKSHOP_CONFIG;
+  });
+
+  const [selectedParticipantId, setSelectedParticipantId] = useState<string>(() => {
+    return participants[0]?.id || 'HY-001';
   });
 
   const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [isCloudReady, setIsCloudReady] = useState<boolean>(false);
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
+
+  const isAdmin = Boolean(
+    cloudUser && cloudUser.email && cloudUser.email.toLowerCase() === ADMIN_EMAIL
+  );
+  const canManageParticipants = !cloudUser || isAdmin;
 
   const participantsRef = useRef(participants);
   const configRef = useRef(config);
+  const activeWorkshopIdRef = useRef(activeWorkshopId);
+
+  useEffect(() => {
+    activeWorkshopIdRef.current = activeWorkshopId;
+    localStorage.setItem('active_workshop_id', activeWorkshopId);
+  }, [activeWorkshopId]);
 
   useEffect(() => {
     participantsRef.current = participants;
     localStorage.setItem('workshop_participants', JSON.stringify(participants));
+    setLocalSessions((prev) => {
+      const curId = activeWorkshopIdRef.current;
+      const updated = {
+        ...prev,
+        [curId]: {
+          workshopId: curId,
+          config: configRef.current,
+          participants,
+        },
+      };
+      localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      return updated;
+    });
   }, [participants]);
 
   useEffect(() => {
     configRef.current = config;
     localStorage.setItem('workshop_config', JSON.stringify(config));
+    setLocalSessions((prev) => {
+      const curId = activeWorkshopIdRef.current;
+      const updated = {
+        ...prev,
+        [curId]: {
+          workshopId: curId,
+          config,
+          participants: participantsRef.current,
+        },
+      };
+      localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      return updated;
+    });
   }, [config]);
 
-  // Listen to Firebase Auth & attach real-time Firestore listeners when authenticated
+  // Listen to Firebase Auth & initialize default 'main' workshop document if needed
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
       setCloudUser(user);
       if (!user) {
+        setIsCloudReady(false);
         setIsCloudSyncing(false);
         return;
       }
 
       setIsCloudSyncing(true);
       const uid = user.uid;
-      const workshopDocRef = doc(db, 'workshops', uid);
+      const curEventId = activeWorkshopIdRef.current || DEFAULT_WORKSHOP_ID;
+      const workshopDocRef = doc(db, 'workshops', curEventId);
 
-      // Seed initial workshop & participants if this user has no workshop document in Firestore yet
       try {
         const snap = await getDoc(workshopDocRef);
         if (!snap.exists()) {
           const curCfg = configRef.current;
-          await setDoc(workshopDocRef, {
+          const batch = writeBatch(db);
+          batch.set(workshopDocRef, {
+            workshopId: curEventId,
             ownerId: uid,
             name: clampStr(curCfg.name, 200, WORKSHOP_CONFIG.name),
             date: clampStr(curCfg.date, 40, WORKSHOP_CONFIG.date),
@@ -164,13 +269,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             updatedAt: serverTimestamp(),
           });
 
-          const batch = writeBatch(db);
           for (const p of participantsRef.current) {
             const safeId = migrateId(p.id);
-            const pRef = doc(db, 'workshops', uid, 'participants', safeId);
+            const pRef = doc(db, 'workshops', curEventId, 'participants', safeId);
             batch.set(pRef, {
               id: safeId,
-              workshopId: uid,
+              workshopId: curEventId,
               ownerId: uid,
               name: clampStr(p.name, 160, 'Peserta'),
               email: clampStr(p.email, 160, '-'),
@@ -184,24 +288,45 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             });
           }
           await batch.commit();
+        } else if (
+          !snap.data().workshopId &&
+          user.email?.toLowerCase() === ADMIN_EMAIL
+        ) {
+          const d = snap.data();
+          await updateDoc(workshopDocRef, {
+            workshopId: curEventId,
+            ownerId: uid,
+            name: clampStr(d.name, 200, WORKSHOP_CONFIG.name),
+            date: clampStr(d.date, 40, WORKSHOP_CONFIG.date),
+            startTime: clampStr(d.startTime, 64, WORKSHOP_CONFIG.startTime),
+            location: clampStr(d.location, 200, WORKSHOP_CONFIG.location),
+            organizer: clampStr(d.organizer, 120, 'Muslimah Healing Journey'),
+            tagline: clampStr(d.tagline, 120, "Let's Heal"),
+            eventLabel: clampStr(d.eventLabel, 120, 'Agenda Workshop Psikologi'),
+            customLogoUrl: (d.customLogoUrl ?? '').slice(0, 350000),
+            updatedAt: serverTimestamp(),
+          });
         }
+        setIsCloudReady(true);
       } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, `workshops/${uid}`);
+        handleFirestoreError(error, OperationType.WRITE, `workshops/${curEventId}`);
+      } finally {
+        setIsCloudSyncing(false);
       }
     });
 
     return () => unsubAuth();
   }, []);
 
-  // Real-time onSnapshot listeners when cloudUser is active
+  // Real-time onSnapshot listeners on the currently selected activeWorkshopId
   useEffect(() => {
-    if (!cloudUser) return;
-    const uid = cloudUser.uid;
-    const workshopPath = `workshops/${uid}`;
-    const participantsPath = `workshops/${uid}/participants`;
+    if (!cloudUser || !isCloudReady) return;
+    const currentEventId = activeWorkshopId;
+    const workshopPath = `workshops/${currentEventId}`;
+    const participantsPath = `workshops/${currentEventId}/participants`;
 
     const unsubWorkshop = onSnapshot(
-      doc(db, 'workshops', uid),
+      doc(db, 'workshops', currentEventId),
       (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
@@ -223,29 +348,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
 
     const qParticipants = query(
-      collection(db, 'workshops', uid, 'participants'),
-      where('ownerId', '==', uid)
+      collection(db, 'workshops', currentEventId, 'participants'),
+      where('workshopId', '==', currentEventId)
     );
 
     const unsubParticipants = onSnapshot(
       qParticipants,
       (querySnap) => {
-        if (!querySnap.empty) {
-          const list: Participant[] = querySnap.docs.map((d) => {
-            const item = d.data();
-            return {
-              id: item.id,
-              name: item.name,
-              email: item.email,
-              institution: item.institution,
-              role: item.role || 'Peserta Workshop',
-              phone: item.phone || '',
-              status: item.status,
-              checkInTime: item.checkInTime ? item.checkInTime : undefined,
-            };
-          });
-          list.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-          setParticipants(list);
+        const list: Participant[] = querySnap.docs.map((d) => {
+          const item = d.data();
+          return {
+            id: item.id,
+            name: item.name,
+            email: item.email,
+            institution: item.institution,
+            role: item.role || 'Peserta Workshop',
+            phone: item.phone || '',
+            status: item.status,
+            checkInTime: item.checkInTime ? item.checkInTime : undefined,
+          };
+        });
+        list.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+        setParticipants(list);
+        if (list.length > 0) {
+          setSelectedParticipantId(list[0].id);
         }
       },
       (error) => {
@@ -257,15 +383,175 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       unsubWorkshop();
       unsubParticipants();
     };
-  }, [cloudUser]);
+  }, [cloudUser, isCloudReady, activeWorkshopId]);
+
+  const eventsList: WorkshopEventItem[] = (Object.values(localSessions) as LocalSessionRecord[])
+    .map((s) => ({
+      workshopId: s.workshopId,
+      config: s.config,
+      participantCount: s.participants.length,
+    }))
+    .sort((a, b) => b.config.date.localeCompare(a.config.date));
+
+  const switchWorkshop = (workshopId: string) => {
+    if (workshopId === activeWorkshopId) return;
+    setActiveWorkshopId(workshopId);
+
+    if (!cloudUser) {
+      const target = localSessions[workshopId];
+      if (target) {
+        setConfig(target.config);
+        setParticipants(target.participants);
+        if (target.participants[0]?.id) {
+          setSelectedParticipantId(target.participants[0].id);
+        }
+      }
+    }
+  };
+
+  const createNewWorkshop = async (params: {
+    name: string;
+    date: string;
+    startTime: string;
+    location: string;
+    copyParticipants?: boolean;
+  }): Promise<string> => {
+    if (!canManageParticipants) return activeWorkshopId;
+
+    const newWorkshopId = `evt-${Date.now()}`;
+    const newConfig: WorkshopConfig = {
+      name: clampStr(params.name, 200, 'Workshop Baru Heal You'),
+      date: clampStr(params.date, 40, WORKSHOP_CONFIG.date),
+      startTime: clampStr(params.startTime, 64, WORKSHOP_CONFIG.startTime),
+      location: clampStr(params.location, 200, WORKSHOP_CONFIG.location),
+      organizer: config.organizer || 'Muslimah Healing Journey',
+      tagline: config.tagline || "Let's Heal",
+      eventLabel: config.eventLabel || 'Agenda Workshop Psikologi',
+      customLogoUrl: config.customLogoUrl || '',
+    };
+
+    const initialNewParticipants: Participant[] = params.copyParticipants
+      ? participants.map((p) => ({
+          ...p,
+          status: 'PENDING',
+          checkInTime: undefined,
+        }))
+      : [];
+
+    // Save locally
+    setLocalSessions((prev) => {
+      const updated = {
+        ...prev,
+        [newWorkshopId]: {
+          workshopId: newWorkshopId,
+          config: newConfig,
+          participants: initialNewParticipants,
+        },
+      };
+      localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      return updated;
+    });
+
+    // Save to Cloud if Admin is logged in
+    if (cloudUser && isAdmin) {
+      const uid = cloudUser.uid;
+      try {
+        const batch = writeBatch(db);
+        const wRef = doc(db, 'workshops', newWorkshopId);
+        batch.set(wRef, {
+          workshopId: newWorkshopId,
+          ownerId: uid,
+          name: newConfig.name,
+          date: newConfig.date,
+          startTime: newConfig.startTime,
+          location: newConfig.location,
+          organizer: clampStr(newConfig.organizer, 120, 'Muslimah Healing Journey'),
+          tagline: clampStr(newConfig.tagline, 120, "Let's Heal"),
+          eventLabel: clampStr(newConfig.eventLabel, 120, 'Agenda Workshop Psikologi'),
+          customLogoUrl: (newConfig.customLogoUrl ?? '').slice(0, 350000),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        for (const p of initialNewParticipants) {
+          const safeId = migrateId(p.id);
+          const pRef = doc(db, 'workshops', newWorkshopId, 'participants', safeId);
+          batch.set(pRef, {
+            id: safeId,
+            workshopId: newWorkshopId,
+            ownerId: uid,
+            name: clampStr(p.name, 160, 'Peserta'),
+            email: clampStr(p.email, 160, '-'),
+            institution: clampStr(p.institution, 160, '-'),
+            role: clampStr(p.role, 100, 'Peserta Workshop'),
+            phone: (p.phone ?? '').trim().slice(0, 60),
+            status: 'PENDING',
+            checkInTime: '',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `workshops/${newWorkshopId}`);
+      }
+    }
+
+    setActiveWorkshopId(newWorkshopId);
+    setConfig(newConfig);
+    setParticipants(initialNewParticipants);
+    if (initialNewParticipants[0]?.id) {
+      setSelectedParticipantId(initialNewParticipants[0].id);
+    }
+
+    return newWorkshopId;
+  };
+
+  const deleteWorkshop = async (workshopIdToDelete: string) => {
+    if (!canManageParticipants) return;
+    if (eventsList.length <= 1) return; // Keep at least 1 workshop event
+
+    const remainingEvents = eventsList.filter((e) => e.workshopId !== workshopIdToDelete);
+    const nextActiveId =
+      workshopIdToDelete === activeWorkshopId
+        ? remainingEvents[0]?.workshopId || DEFAULT_WORKSHOP_ID
+        : activeWorkshopId;
+
+    setLocalSessions((prev) => {
+      const copy = { ...prev };
+      delete copy[workshopIdToDelete];
+      localStorage.setItem('workshop_sessions_v1', JSON.stringify(copy));
+      return copy;
+    });
+
+    if (cloudUser && isAdmin) {
+      try {
+        const pQuery = query(
+          collection(db, 'workshops', workshopIdToDelete, 'participants'),
+          where('workshopId', '==', workshopIdToDelete)
+        );
+        const pSnap = await getDocs(pQuery);
+        const batch = writeBatch(db);
+        pSnap.docs.forEach((d) => batch.delete(d.ref));
+        batch.delete(doc(db, 'workshops', workshopIdToDelete));
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `workshops/${workshopIdToDelete}`);
+      }
+    }
+
+    if (workshopIdToDelete === activeWorkshopId) {
+      switchWorkshop(nextActiveId);
+    }
+  };
 
   const syncParticipantUpdateToCloud = async (id: string, updates: Record<string, unknown>) => {
     if (!cloudUser) return;
-    const uid = cloudUser.uid;
+    const curEventId = activeWorkshopIdRef.current;
     const safeId = migrateId(id);
-    const pPath = `workshops/${uid}/participants/${safeId}`;
+    const pPath = `workshops/${curEventId}/participants/${safeId}`;
     try {
-      await updateDoc(doc(db, 'workshops', uid, 'participants', safeId), {
+      await updateDoc(doc(db, 'workshops', curEventId, 'participants', safeId), {
         ...updates,
         updatedAt: serverTimestamp(),
       });
@@ -275,14 +561,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const syncNewParticipantToCloud = async (p: Participant) => {
-    if (!cloudUser) return;
+    if (!cloudUser || !isAdmin) return;
     const uid = cloudUser.uid;
+    const curEventId = activeWorkshopIdRef.current;
     const safeId = migrateId(p.id);
-    const pPath = `workshops/${uid}/participants/${safeId}`;
+    const pPath = `workshops/${curEventId}/participants/${safeId}`;
     try {
-      await setDoc(doc(db, 'workshops', uid, 'participants', safeId), {
+      await setDoc(doc(db, 'workshops', curEventId, 'participants', safeId), {
         id: safeId,
-        workshopId: uid,
+        workshopId: curEventId,
         ownerId: uid,
         name: clampStr(p.name, 160, 'Peserta'),
         email: clampStr(p.email, 160, '-'),
@@ -376,6 +663,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status: 'PENDING',
     };
 
+    if (!canManageParticipants) {
+      return newParticipant;
+    }
+
     setParticipants((prev) => [newParticipant, ...prev]);
     void syncNewParticipantToCloud(newParticipant);
     return newParticipant;
@@ -391,6 +682,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       phone?: string;
     }>
   ): number => {
+    if (!canManageParticipants) return 0;
+
     const validRows = rows.filter((r) => r.name && r.name.trim().length > 0);
     if (validRows.length === 0) return 0;
 
@@ -442,50 +735,78 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const current = participants.find((p) => p.id === id);
     if (!current) return;
 
+    const isStatusOnlyUpdate = Object.keys(updates).every(
+      (k) => k === 'status' || k === 'checkInTime'
+    );
+
+    if (!canManageParticipants && !isStatusOnlyUpdate) {
+      return;
+    }
+
     const merged: Participant = { ...current, ...updates };
     setParticipants((prev) => prev.map((p) => (p.id === id ? merged : p)));
 
     if (cloudUser) {
-      if (updates.id && updates.id !== id) {
-        // ID changed: delete old doc and create new doc
-        const uid = cloudUser.uid;
-        void deleteDoc(doc(db, 'workshops', uid, 'participants', migrateId(id))).catch((e) =>
-          handleFirestoreError(e, OperationType.DELETE, `workshops/${uid}/participants/${id}`)
-        );
-        void syncNewParticipantToCloud(merged);
-      } else {
+      const curEventId = activeWorkshopIdRef.current;
+      if (isStatusOnlyUpdate) {
         void syncParticipantUpdateToCloud(id, {
-          name: clampStr(merged.name, 160, 'Peserta'),
-          email: clampStr(merged.email, 160, '-'),
-          institution: clampStr(merged.institution, 160, '-'),
-          role: clampStr(merged.role, 100, 'Peserta Workshop'),
-          phone: (merged.phone ?? '').trim().slice(0, 60),
           status: merged.status,
           checkInTime: (merged.checkInTime ?? '').slice(0, 64),
         });
+      } else if (isAdmin) {
+        if (updates.id && updates.id !== id) {
+          void deleteDoc(
+            doc(db, 'workshops', curEventId, 'participants', migrateId(id))
+          ).catch((e) =>
+            handleFirestoreError(
+              e,
+              OperationType.DELETE,
+              `workshops/${curEventId}/participants/${id}`
+            )
+          );
+          void syncNewParticipantToCloud(merged);
+        } else {
+          void syncParticipantUpdateToCloud(id, {
+            ownerId: cloudUser.uid,
+            name: clampStr(merged.name, 160, 'Peserta'),
+            email: clampStr(merged.email, 160, '-'),
+            institution: clampStr(merged.institution, 160, '-'),
+            role: clampStr(merged.role, 100, 'Peserta Workshop'),
+            phone: (merged.phone ?? '').trim().slice(0, 60),
+            status: merged.status,
+            checkInTime: (merged.checkInTime ?? '').slice(0, 64),
+          });
+        }
       }
     }
   };
 
   const deleteParticipant = (id: string) => {
+    if (!canManageParticipants) return;
     setParticipants((prev) => prev.filter((p) => p.id !== id));
-    if (cloudUser) {
-      const uid = cloudUser.uid;
+    if (cloudUser && isAdmin) {
+      const curEventId = activeWorkshopIdRef.current;
       const safeId = migrateId(id);
-      void deleteDoc(doc(db, 'workshops', uid, 'participants', safeId)).catch((e) =>
-        handleFirestoreError(e, OperationType.DELETE, `workshops/${uid}/participants/${safeId}`)
+      void deleteDoc(doc(db, 'workshops', curEventId, 'participants', safeId)).catch((e) =>
+        handleFirestoreError(
+          e,
+          OperationType.DELETE,
+          `workshops/${curEventId}/participants/${safeId}`
+        )
       );
     }
   };
 
   const updateConfig = (updates: Partial<WorkshopConfig>) => {
+    if (!canManageParticipants) return;
     const merged: WorkshopConfig = { ...config, ...updates };
     setConfig(merged);
 
-    if (cloudUser) {
-      const uid = cloudUser.uid;
-      const wPath = `workshops/${uid}`;
-      void updateDoc(doc(db, 'workshops', uid), {
+    if (cloudUser && isAdmin) {
+      const curEventId = activeWorkshopIdRef.current;
+      const wPath = `workshops/${curEventId}`;
+      void updateDoc(doc(db, 'workshops', curEventId), {
+        ownerId: cloudUser.uid,
         name: clampStr(merged.name, 200, WORKSHOP_CONFIG.name),
         date: clampStr(merged.date, 40, WORKSHOP_CONFIG.date),
         startTime: clampStr(merged.startTime, 64, WORKSHOP_CONFIG.startTime),
@@ -500,16 +821,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const resetData = () => {
+    if (!canManageParticipants) return;
+    const curEventId = activeWorkshopIdRef.current;
     setParticipants(INITIAL_PARTICIPANTS);
     setConfig(WORKSHOP_CONFIG);
-    localStorage.removeItem('workshop_participants');
-    localStorage.removeItem('workshop_config');
 
-    if (cloudUser) {
-      const uid = cloudUser.uid;
+    if (cloudUser && isAdmin) {
       void (async () => {
         try {
-          await updateDoc(doc(db, 'workshops', uid), {
+          await updateDoc(doc(db, 'workshops', curEventId), {
+            ownerId: cloudUser.uid,
             name: WORKSHOP_CONFIG.name,
             date: WORKSHOP_CONFIG.date,
             startTime: WORKSHOP_CONFIG.startTime,
@@ -524,7 +845,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             await syncNewParticipantToCloud(p);
           }
         } catch (e) {
-          handleFirestoreError(e, OperationType.WRITE, `workshops/${uid}`);
+          handleFirestoreError(e, OperationType.WRITE, `workshops/${curEventId}`);
         }
       })();
     }
@@ -543,6 +864,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       value={{
         participants,
         config,
+        eventsList,
+        activeWorkshopId,
+        switchWorkshop,
+        createNewWorkshop,
+        deleteWorkshop,
         selectedParticipantId,
         setSelectedParticipantId,
         checkIn,
@@ -553,6 +879,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateConfig,
         resetData,
         cloudUser,
+        isAdmin,
+        canManageParticipants,
         isCloudSyncing,
         connectCloud,
         disconnectCloud,
