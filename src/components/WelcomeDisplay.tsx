@@ -403,8 +403,8 @@ export const WelcomeDisplay: React.FC<WelcomeDisplayProps> = ({ onClose }) => {
           { facingMode: mode },
           {
             fps: 12,
-            qrbox: { width: 185, height: 185 },
-            aspectRatio: 1.333,
+            qrbox: { width: 250, height: 250 },
+            aspectRatio: 1.0,
           },
           (decodedText) => {
             const now = Date.now();
@@ -691,7 +691,7 @@ export const WelcomeDisplay: React.FC<WelcomeDisplayProps> = ({ onClose }) => {
           className={cn(
             'flex flex-col',
             showScannerPanel || showBreathingGuide
-              ? 'lg:col-span-8'
+              ? 'lg:col-span-7 xl:col-span-8'
               : 'lg:col-span-12 max-w-5xl mx-auto w-full'
           )}
         >
@@ -865,7 +865,7 @@ export const WelcomeDisplay: React.FC<WelcomeDisplayProps> = ({ onClose }) => {
 
         {/* Right Column: QR Scanner Card & Mindful Breathing Card */}
         {(showScannerPanel || showBreathingGuide) && (
-          <div className="lg:col-span-4 flex flex-col gap-4 justify-between">
+          <div className="lg:col-span-5 xl:col-span-4 flex flex-col gap-4 justify-between">
             {/* Top-Right Card: Pindai Kartu QR di Sini */}
             {showScannerPanel && (
               <div className="bg-white/90 backdrop-blur-md rounded-[26px] p-5 border border-white shadow-[0_10px_32px_rgba(43,27,71,0.07)] flex flex-col">
@@ -922,28 +922,36 @@ export const WelcomeDisplay: React.FC<WelcomeDisplayProps> = ({ onClose }) => {
                   </div>
                 </div>
 
-                {/* Deep Indigo-Plum Camera Viewport Box matching Reference */}
-                <div className="relative w-full h-[185px] sm:h-[195px] rounded-2xl overflow-hidden bg-[#352852] flex items-center justify-center">
+                {/* Enlarged 1:1 Square Deep Indigo-Plum Camera Viewport Box */}
+                <div className="relative w-full max-w-[340px] xl:max-w-[380px] aspect-square mx-auto rounded-2xl overflow-hidden bg-[#352852] flex items-center justify-center shadow-inner [&_video]:w-full [&_video]:h-full [&_video]:object-cover">
                   <div id="tv-welcome-qr-reader" className="w-full h-full" />
 
                   {!isScanning && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-[#352852] text-white">
-                      <div className="w-11 h-11 rounded-full bg-white/15 flex items-center justify-center mb-2.5">
-                        <Camera className="w-5 h-5 text-purple-100" />
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-[#352852] text-white">
+                      {/* Subtle Square Viewfinder Corners */}
+                      <div className="pointer-events-none absolute inset-5">
+                        <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-purple-300/40 rounded-tl-lg" />
+                        <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-purple-300/40 rounded-tr-lg" />
+                        <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-purple-300/40 rounded-bl-lg" />
+                        <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-purple-300/40 rounded-br-lg" />
                       </div>
-                      <p className="text-xs sm:text-[13px] font-bold text-white">
+
+                      <div className="w-14 h-14 rounded-full bg-white/15 flex items-center justify-center mb-3.5">
+                        <Camera className="w-6 h-6 text-purple-100" />
+                      </div>
+                      <p className="text-sm sm:text-base font-bold text-white">
                         Kamera Kiosk Layar TV Siap Diaktifkan
                       </p>
-                      <p className="text-[11px] text-purple-100/80 mt-1 max-w-[260px] leading-snug">
+                      <p className="text-xs text-purple-100/80 mt-1.5 max-w-[260px] leading-relaxed">
                         Klik tombol Aktifkan Kamera agar peserta dapat memindai kartu QR mereka
                         sendiri di depan layar ini.
                       </p>
                       <button
                         type="button"
                         onClick={() => void startCamera(facingMode)}
-                        className="mt-3 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold bg-white text-[#2B1B47] hover:bg-purple-50 shadow-sm transition-all cursor-pointer"
+                        className="mt-4 inline-flex items-center gap-2 px-5 py-2 rounded-full text-xs sm:text-sm font-bold bg-white text-[#2B1B47] hover:bg-purple-50 shadow-md transition-all cursor-pointer"
                       >
-                        <Camera className="w-3.5 h-3.5 text-[#68428B]" />
+                        <Camera className="w-4 h-4 text-[#68428B]" />
                         <span>Mulai Pindai QR</span>
                       </button>
                     </div>

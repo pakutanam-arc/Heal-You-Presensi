@@ -307,7 +307,7 @@ export const Scanner: React.FC = () => {
   const pendingParticipants = participants.filter((p) => p.status === 'PENDING');
 
   return (
-    <div className="flex flex-col h-full bg-white rounded-2xl shadow-xs border border-purple-100 overflow-hidden">
+    <div className="flex flex-col bg-white rounded-2xl shadow-xs border border-purple-100 overflow-hidden">
       <div className="p-5 border-b border-slate-100">
         <div className="flex items-center justify-between gap-2">
           <div>
@@ -390,12 +390,12 @@ export const Scanner: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-1 p-5 flex flex-col justify-between relative">
+      <div className="p-5 flex flex-col relative">
         {/* Hidden or active reader container required by Html5Qrcode */}
         <div
           className={cn(
             'w-full max-w-xs mx-auto relative',
-            mode !== 'camera' && 'sr-only'
+            (mode !== 'camera' || (!isCameraActive && !isStartingCamera)) && 'sr-only'
           )}
         >
           <div
@@ -409,9 +409,9 @@ export const Scanner: React.FC = () => {
 
         {/* CAMERA MODE UI */}
         {mode === 'camera' && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center">
+          <div className="flex flex-col items-center justify-center text-center">
             {!isCameraActive ? (
-              <div className="w-full max-w-xs mx-auto py-6 px-4 rounded-xl border border-dashed border-purple-200 bg-purple-50/30 flex flex-col items-center">
+              <div className="w-full py-6 px-4 rounded-xl border border-dashed border-purple-200 bg-purple-50/30 flex flex-col items-center">
                 <div className="w-12 h-12 rounded-full bg-purple-100/80 text-[#5e438f] flex items-center justify-center mb-3">
                   <Camera className="w-6 h-6" />
                 </div>
@@ -480,8 +480,8 @@ export const Scanner: React.FC = () => {
 
         {/* FILE UPLOAD MODE UI */}
         {mode === 'file' && (
-          <div className="flex-1 flex flex-col items-center justify-center">
-            <label className="w-full max-w-xs mx-auto py-8 px-4 rounded-xl border-2 border-dashed border-purple-200 hover:border-purple-400 bg-purple-50/30 hover:bg-purple-50/60 transition-colors flex flex-col items-center text-center cursor-pointer">
+          <div className="flex flex-col items-center justify-center">
+            <label className="w-full py-8 px-4 rounded-xl border-2 border-dashed border-purple-200 hover:border-purple-400 bg-purple-50/30 hover:bg-purple-50/60 transition-colors flex flex-col items-center text-center cursor-pointer">
               <div className="w-12 h-12 rounded-full bg-purple-100/80 text-[#5e438f] flex items-center justify-center mb-3">
                 <Upload className="w-5 h-5" />
               </div>
@@ -504,7 +504,7 @@ export const Scanner: React.FC = () => {
 
         {/* MANUAL ID MODE UI */}
         {mode === 'manual' && (
-          <div className="flex-1 flex flex-col justify-center">
+          <div className="flex flex-col">
             <form onSubmit={handleManualSubmit} className="space-y-3">
               <div>
                 <label htmlFor="manual-id-input" className="block text-xs font-medium text-slate-700 mb-1">
@@ -591,6 +591,35 @@ export const Scanner: React.FC = () => {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {mode !== 'manual' && pendingParticipants.length > 0 && (
+          <div className="mt-4 pt-3.5 border-t border-slate-100">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-slate-600">
+                Check-in Cepat ({pendingParticipants.length} Belum Hadir)
+              </span>
+              <span className="text-[11px] text-[#5e438f] font-medium">Klik untuk hadir</span>
+            </div>
+            <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-xl bg-slate-50/50">
+              {pendingParticipants.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => triggerCheckIn(p.id)}
+                  className="w-full px-3 py-2 text-left hover:bg-purple-50/70 flex items-center justify-between gap-2 text-xs transition-colors cursor-pointer"
+                >
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-800 truncate">{p.name}</p>
+                    <p className="text-[11px] text-slate-500 truncate">{p.institution}</p>
+                  </div>
+                  <span className="font-mono font-semibold text-[#5e438f] bg-white px-2 py-0.5 rounded border border-purple-100 shrink-0">
+                    {p.id}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="mt-4 pt-3 border-t border-slate-100 text-center text-xs text-slate-400">
           Arahkan QR Code ke kamera atau unggah Kartu QR peserta untuk mencatat kehadiran otomatis.

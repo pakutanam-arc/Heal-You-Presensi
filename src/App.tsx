@@ -213,7 +213,7 @@ function AppContent() {
     <div className="min-h-screen flex flex-col bg-[#faf9fe]">
       {/* Header */}
       <header className="bg-white border-b border-purple-100 sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+        <div className="w-full max-w-[1680px] mx-auto px-3 sm:px-6 lg:px-8 min-h-16 py-2 flex flex-wrap xl:flex-nowrap items-center justify-between gap-2 sm:gap-3">
           {/* Left: Brand + Desktop Navigation */}
           <div className="flex items-center gap-3 xl:gap-6 min-w-0">
             <div className="flex items-center gap-2 shrink-0">
@@ -787,7 +787,7 @@ function AppContent() {
       )}
 
       {/* Main Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex gap-6 flex-col">
+      <main className="flex-1 w-full max-w-[1680px] mx-auto p-4 sm:p-6 lg:p-8 flex gap-6 flex-col">
         {/* Mobile/Tablet Tabs Navigation */}
         <div
           className={cn(
@@ -867,8 +867,8 @@ function AppContent() {
 
         {/* VIEW 2: DASHBOARD + SIDEBAR SCANNER */}
         {activeTab === 'dashboard' && (
-          <div className="flex-1 flex flex-col lg:flex-row gap-6 items-stretch">
-            <div className="flex-1 min-w-0">
+          <div className="flex-1 flex flex-col lg:flex-row gap-6 items-start">
+            <div className="flex-1 min-w-0 w-full">
               <Dashboard
                 onEditParticipant={
                   canManageParticipants
@@ -881,7 +881,7 @@ function AppContent() {
               />
             </div>
 
-            <div className="hidden lg:block lg:w-[360px] xl:w-[380px] shrink-0">
+            <div className="hidden lg:block lg:w-[350px] xl:w-[380px] shrink-0 lg:sticky lg:top-20">
               <Scanner />
             </div>
           </div>
@@ -889,9 +889,9 @@ function AppContent() {
 
         {/* VIEW 3: FULL CHECK-IN KIOSK VIEW (SCANNER + LIVE CHECK-IN MONITOR) */}
         {activeTab === 'scanner' && (
-          <div className="flex-1 flex flex-col lg:flex-row gap-6 items-stretch">
+          <div className="flex-1 flex flex-col lg:flex-row gap-6 items-start">
             {/* Left Column: Dedicated QR Scanner */}
-            <div className="w-full max-w-md mx-auto lg:max-w-none lg:w-[400px] xl:w-[420px] shrink-0 min-h-[540px]">
+            <div className="w-full max-w-md mx-auto lg:max-w-none lg:w-[380px] xl:w-[410px] shrink-0 lg:sticky lg:top-20">
               <Scanner />
             </div>
 
