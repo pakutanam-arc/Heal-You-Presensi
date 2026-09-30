@@ -1,0 +1,262 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Validation Blueprint: Workshop
+    function isValidWorkshop(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'name',
+          'date',
+          'startTime',
+          'location',
+          'organizer',
+          'tagline',
+          'eventLabel',
+          'customLogoUrl',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'name',
+          'date',
+          'startTime',
+          'location',
+          'organizer',
+          'tagline',
+          'eventLabel',
+          'customLogoUrl',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 200
+        && data.date is string
+        && data.date.size() >= 1
+        && data.date.size() <= 40
+        && data.startTime is string
+        && data.startTime.size() >= 1
+        && data.startTime.size() <= 64
+        && data.location is string
+        && data.location.size() >= 1
+        && data.location.size() <= 200
+        && data.organizer is string
+        && data.organizer.size() >= 1
+        && data.organizer.size() <= 120
+        && data.tagline is string
+        && data.tagline.size() >= 1
+        && data.tagline.size() <= 120
+        && data.eventLabel is string
+        && data.eventLabel.size() >= 1
+        && data.eventLabel.size() <= 120
+        && data.customLogoUrl is string
+        && data.customLogoUrl.size() <= 350000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: Participant
+    function isValidParticipant(data) {
+      return data.keys().hasAll([
+          'id',
+          'workshopId',
+          'ownerId',
+          'name',
+          'email',
+          'institution',
+          'role',
+          'phone',
+          'status',
+          'checkInTime',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'workshopId',
+          'ownerId',
+          'name',
+          'email',
+          'institution',
+          'role',
+          'phone',
+          'status',
+          'checkInTime',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.id is string
+        && data.id.size() >= 1
+        && data.id.size() <= 64
+        && data.id.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.workshopId is string
+        && data.workshopId.size() >= 1
+        && data.workshopId.size() <= 128
+        && data.workshopId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 160
+        && data.email is string
+        && data.email.size() >= 1
+        && data.email.size() <= 160
+        && data.institution is string
+        && data.institution.size() >= 1
+        && data.institution.size() <= 160
+        && data.role is string
+        && data.role.size() >= 1
+        && data.role.size() <= 100
+        && data.phone is string
+        && data.phone.size() <= 60
+        && data.status is string
+        && (data.status == 'PENDING' || data.status == 'PRESENT' || data.status == 'LATE')
+        && data.checkInTime is string
+        && data.checkInTime.size() <= 64
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection: /workshops/{workshopId}
+    match /workshops/{workshopId} {
+      allow get: if isSignedIn()
+        && isValidId(workshopId)
+        && workshopId == request.auth.uid
+        && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(workshopId)
+        && workshopId == request.auth.uid
+        && isValidWorkshop(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(workshopId)
+        && workshopId == request.auth.uid
+        && isValidWorkshop(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Update Workshop Config
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name',
+            'date',
+            'startTime',
+            'location',
+            'organizer',
+            'tagline',
+            'eventLabel',
+            'customLogoUrl',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(workshopId)
+        && workshopId == request.auth.uid
+        && existing().ownerId == request.auth.uid;
+
+      // Subcollection: /workshops/{workshopId}/participants/{participantId}
+      match /participants/{participantId} {
+        allow get: if isSignedIn()
+          && isValidId(workshopId)
+          && isValidId(participantId)
+          && workshopId == request.auth.uid
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid;
+
+        // Secure List Query: No get()/exists() inside list, strictly bound to ownerId
+        allow list: if isSignedIn()
+          && workshopId == request.auth.uid
+          && existing().ownerId == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(participantId)
+          && workshopId == request.auth.uid
+          && isValidParticipant(incoming())
+          && incoming().id == participantId
+          && incoming().workshopId == workshopId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/workshops/$(workshopId))
+          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid;
+
+        allow update: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(participantId)
+          && workshopId == request.auth.uid
+          && isValidParticipant(incoming())
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().workshopId == existing().workshopId
+          && incoming().id == existing().id
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid
+          && (
+            // Action: Check-in or Status Change
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'checkInTime', 'updatedAt'])
+            ||
+            // Action: Edit Participant Profile & Status
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'email',
+              'institution',
+              'role',
+              'phone',
+              'status',
+              'checkInTime',
+              'updatedAt'
+            ])
+          );
+
+        allow delete: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(participantId)
+          && workshopId == request.auth.uid
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "entities": {
+    "Workshop": {
+      "title": "Workshop",
+      "description": "Configuration and metadata for a psychology workshop owned by an organizer.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the authenticated organizer who owns this workshop.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Title of the psychology workshop.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "date": {
+          "type": "string",
+          "description": "Workshop date in YYYY-MM-DD format.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "startTime": {
+          "type": "string",
+          "description": "ISO-8601 timestamp string for workshop start time.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "location": {
+          "type": "string",
+          "description": "Venue or room location for the workshop.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "organizer": {
+          "type": "string",
+          "description": "Organizer subtitle displayed on the ID card.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "tagline": {
+          "type": "string",
+          "description": "Tagline displayed on the ID card.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "eventLabel": {
+          "type": "string",
+          "description": "Event category label displayed on the ID card.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "customLogoUrl": {
+          "type": "string",
+          "description": "Optional data URI or URL for custom card logo.",
+          "minLength": 0,
+          "maxLength": 350000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the workshop document was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the workshop document was last updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "name",
+        "date",
+        "startTime",
+        "location",
+        "organizer",
+        "tagline",
+        "eventLabel",
+        "customLogoUrl",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Participant": {
+      "title": "Participant",
+      "description": "Workshop participant registration and real-time attendance status.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Participant attendance code (e.g., HY-001).",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "workshopId": {
+          "type": "string",
+          "description": "Parent workshop ID (matches organizer UID).",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the authenticated organizer who owns this participant record.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Full name and academic/clinical title of the participant.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "email": {
+          "type": "string",
+          "description": "Participant email address.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "institution": {
+          "type": "string",
+          "description": "Participant institution, university, or clinic affiliation.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "role": {
+          "type": "string",
+          "description": "Participant role or category (e.g., Peserta Workshop, Pembicara).",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "phone": {
+          "type": "string",
+          "description": "Participant WhatsApp or contact number.",
+          "minLength": 0,
+          "maxLength": 60
+        },
+        "status": {
+          "type": "string",
+          "description": "Attendance status of the participant.",
+          "enum": ["PENDING", "PRESENT", "LATE"]
+        },
+        "checkInTime": {
+          "type": "string",
+          "description": "ISO-8601 check-in timestamp string (empty string if PENDING).",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the participant record was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the participant record was last updated."
+        }
+      },
+      "required": [
+        "id",
+        "workshopId",
+        "ownerId",
+        "name",
+        "email",
+        "institution",
+        "role",
+        "phone",
+        "status",
+        "checkInTime",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/workshops/{workshopId}": {
+      "schema": {
+        "$ref": "#/entities/Workshop"
+      },
+      "description": "Stores workshop configuration owned by the authenticated organizer (where workshopId == ownerId)."
+    },
+    "/workshops/{workshopId}/participants/{participantId}": {
+      "schema": {
+        "$ref": "#/entities/Participant"
+      },
+      "description": "Stores participant registration and check-in records under a specific workshop."
+    }
+  }
+}

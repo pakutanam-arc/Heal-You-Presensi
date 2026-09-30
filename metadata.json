@@ -1,0 +1,10 @@
+{
+  "name": "PsyCheck - Workshop Presensi",
+  "description": "QR Code based attendance tracking system for psychology workshops with real-time dashboards and Excel export.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
