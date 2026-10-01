@@ -21,6 +21,7 @@ import {
   saveParticipantTransferSubmission,
   computeApprovalSignature,
   verifyApprovalSignature,
+  getCertificateClaimStatus,
 } from '../lib/registrationTemplate';
 import { RegistrationFormEditorModal } from './RegistrationFormEditorModal';
 import {
@@ -203,6 +204,34 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
     loadRegistrationTemplate(activeWorkshopId)
   );
   const [isFormEditorOpen, setIsFormEditorOpen] = useState<boolean>(openEditorInitially);
+  const [certNowMs, setCertNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCertNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const certClaimStatus = getCertificateClaimStatus(
+    activeConfig.startTime,
+    Boolean(formTemplate.certificateClaimAdminApproved || activeConfig.certificateClaimApproved),
+    certNowMs
+  );
+  const startTimeFormatted = formatSafeTimeStr(activeConfig.startTime);
+  const certUnlockTimeFormatted = formatSafeTimeStr(
+    new Date(certClaimStatus.unlockTimeMs).toISOString()
+  );
+
+  const handleToggleCertClaimApproval = (approved: boolean) => {
+    const updated = saveRegistrationTemplate(activeWorkshopId, {
+      ...formTemplate,
+      certificateClaimAdminApproved: approved,
+    });
+    setFormTemplate(updated);
+    updateConfig({ certificateClaimApproved: approved });
+    playScanBeep(approved ? 'success' : 'warning');
+  };
 
   useEffect(() => {
     setFormTemplate(loadRegistrationTemplate(activeWorkshopId));
@@ -1342,7 +1371,8 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
               value={buildCertificateVerificationUrl(
                 registeredParticipant,
                 getCanonicalParticipantSeqIndex(registeredParticipant.id, participants),
-                certificateSettings.numberSuffix
+                certificateSettings.numberSuffix,
+                activeWorkshopId
               )}
               size={360}
               level="M"
@@ -1368,7 +1398,8 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
               value={buildCertificateVerificationUrl(
                 verifiedParticipant,
                 getCanonicalParticipantSeqIndex(verifiedParticipant.id, participants),
-                certificateSettings.numberSuffix
+                certificateSettings.numberSuffix,
+                activeWorkshopId
               )}
               size={360}
               level="M"
@@ -3157,6 +3188,101 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
 
         {/* TAB 2: UPLOAD / SCAN KARTU PENGENAL, EVALUASI & KLAIM E-SERTIFIKAT (TANPA INPUT ID MANUAL) */}
         {portalTab === 'certificate' && (
+          <div className="space-y-5">
+            {/* Jadwal Klaim E-Sertifikat (2 Jam Setelah Acara) & Persetujuan Admin Banner */}
+            <div
+              className={cn(
+                'rounded-3xl border p-4 sm:p-5 shadow-xs transition-all flex flex-col lg:flex-row lg:items-center justify-between gap-4',
+                certClaimStatus.isUnlocked
+                  ? 'bg-emerald-50/90 border-emerald-200'
+                  : 'bg-amber-50/90 border-amber-300'
+              )}
+            >
+              <div className="flex items-start gap-3.5">
+                <div
+                  className={cn(
+                    'w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 shadow-xs',
+                    certClaimStatus.isUnlocked
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-amber-500 text-white'
+                  )}
+                >
+                  {certClaimStatus.isUnlocked ? (
+                    <Unlock className="w-5 h-5" />
+                  ) : (
+                    <Clock className="w-5 h-5" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={cn(
+                        'px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
+                        certClaimStatus.isUnlocked
+                          ? 'bg-emerald-200/80 text-emerald-950'
+                          : 'bg-amber-200/90 text-amber-950'
+                      )}
+                    >
+                      {certClaimStatus.isAdminApproved
+                        ? '✓ Dibuka Atas Persetujuan Admin'
+                        : certClaimStatus.isTimeReached
+                          ? '✓ Jadwal Klaim Otomatis Terbuka (≥ 2 Jam Acara)'
+                          : '⏳ Menunggu 2 Jam Setelah Acara / Persetujuan Admin'}
+                    </span>
+                    <span className="text-[11px] font-mono font-semibold text-slate-600">
+                      Jam Mulai: {startTimeFormatted} WIB · Jadwal Klaim: {certUnlockTimeFormatted} WIB
+                    </span>
+                  </div>
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-1">
+                    {certClaimStatus.isUnlocked
+                      ? 'Akses Klaim & Unduh E-Sertifikat Telah Dibuka'
+                      : `Klaim E-Sertifikat Baru Dapat Dilakukan Pukul ${certUnlockTimeFormatted} WIB (2 Jam Setelah Acara) atau Atas Persetujuan Admin`}
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                    {certClaimStatus.isUnlocked
+                      ? 'Silakan unggah Kartu Pengenal / Barcode Anda di bawah untuk mengisi evaluasi singkat dan mengunduh E-Sertifikat resmi.'
+                      : `Sistem akan membuka akses klaim secara otomatis 2 jam setelah acara dimulai (${certClaimStatus.formattedCountdown} lagi), atau lebih cepat apabila telah disetujui oleh Admin.`}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                {!certClaimStatus.isUnlocked && (
+                  <div className="px-3.5 py-2 rounded-2xl bg-white border border-amber-300 text-amber-950 text-xs font-mono font-bold shadow-2xs flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
+                    <span>Buka dalam: {certClaimStatus.formattedCountdown}</span>
+                  </div>
+                )}
+
+                {(canManageParticipants || canVerifyPayment) && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleToggleCertClaimApproval(!certClaimStatus.isAdminApproved)
+                    }
+                    className={cn(
+                      'px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1.5 shadow-2xs',
+                      certClaimStatus.isAdminApproved
+                        ? 'bg-white hover:bg-rose-50 text-rose-700 border border-rose-200'
+                        : 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                    )}
+                  >
+                    {certClaimStatus.isAdminApproved ? (
+                      <>
+                        <Lock className="w-3.5 h-3.5" />
+                        <span>Kembalikan ke Jadwal 2 Jam</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>Setujui &amp; Buka Klaim Sekarang (Admin)</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             {/* Left Column: Upload Kartu Pengenal / Foto / Barcode OR Live Camera Scan */}
             <div className="lg:col-span-5 bg-white rounded-3xl border border-purple-100 shadow-xs overflow-hidden">
@@ -3343,30 +3469,86 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
                     <span>{lookupError}</span>
                   </div>
                 )}
-
-                {/* Security & LocalStorage Info Box */}
-                <div className="p-3.5 rounded-2xl bg-purple-50/70 border border-purple-100 space-y-1.5 text-[11px] text-slate-600 leading-relaxed">
-                  <div className="flex items-center gap-1.5 font-bold text-purple-950">
-                    <Lock className="w-3.5 h-3.5 text-purple-700 shrink-0" />
-                    <span>Proteksi Privasi &amp; Keamanan Sertifikat</span>
-                  </div>
-                  <p>
-                    • <strong>Tanpa Input Nomor ID:</strong> Pencarian manual dengan Nomor ID
-                    dinonaktifkan agar peserta lain tidak dapat menebak ID (<code>HY-001</code>,{' '}
-                    <code>HY-002</code>) dan mengakses sertifikat milik Anda.
-                  </p>
-                  <p>
-                    • <strong>100% Local Storage Pengguna:</strong> Kartu pengenal / foto / barcode
-                    yang Anda unggah diproses langsung di browser perangkat Anda dan{' '}
-                    <strong>tidak pernah disimpan ke server/Firebase</strong>.
-                  </p>
-                </div>
               </div>
             </div>
 
             {/* Right Column: Verification Result, Post-Workshop Evaluation & Certificate Download */}
             <div className="lg:col-span-7 flex flex-col gap-5">
-              {!verifiedParticipant ? (
+              {!certClaimStatus.isUnlocked ? (
+                /* Locked until 2 hours after event starts OR Admin approval */
+                <div className="bg-white rounded-3xl border border-amber-200 shadow-xs overflow-hidden">
+                  <div className="p-5 bg-amber-50 border-b border-amber-200 flex items-start gap-3.5">
+                    <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <Lock className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-200/80 text-amber-950">
+                        Klaim E-Sertifikat Belum Dibuka
+                      </span>
+                      <h3 className="text-base font-bold text-amber-950 mt-1">
+                        {verifiedParticipant
+                          ? `Halo, ${verifiedParticipant.name} (${verifiedParticipant.id})`
+                          : 'Menunggu Waktu Klaim (2 Jam Setelah Acara) atau Persetujuan Admin'}
+                      </h3>
+                      <p className="text-xs text-amber-900/90 mt-0.5">
+                        Acara dimulai pukul <strong>{startTimeFormatted} WIB</strong> · Jadwal buka
+                        otomatis pukul <strong>{certUnlockTimeFormatted} WIB</strong>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-6 space-y-5">
+                    <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200/90 text-xs text-amber-950 leading-relaxed space-y-2">
+                      <p className="font-bold text-sm">
+                        Kapan E-Sertifikat dapat diklaim dan diunduh?
+                      </p>
+                      <p>
+                        Sesuai ketentuan penyelenggara, klaim E-Sertifikat baru dapat dilakukan{' '}
+                        <strong>2 jam setelah acara berlangsung</strong> (pukul{' '}
+                        <strong>{certUnlockTimeFormatted} WIB</strong>) atau lebih awal{' '}
+                        <strong>atas persetujuan Admin</strong>.
+                      </p>
+                      <div className="pt-2 flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-amber-300 font-mono font-bold text-amber-900 text-xs">
+                          <Clock className="w-3.5 h-3.5 text-amber-600" />
+                          Hitung Mundur Otomatis: {certClaimStatus.formattedCountdown}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <a
+                        href={`https://wa.me/${adminWaTarget}?text=${encodeURIComponent(
+                          `Assalamu'alaikum Admin, saya ${
+                            verifiedParticipant
+                              ? `${verifiedParticipant.name} (ID: ${verifiedParticipant.id})`
+                              : 'peserta workshop'
+                          } memohon persetujuan untuk membuka akses klaim E-Sertifikat (${
+                            activeConfig.name
+                          }). Terima kasih.`
+                        )}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-900 hover:bg-purple-950 text-white transition-all cursor-pointer"
+                      >
+                        <span>Minta Persetujuan Klaim ke WA Admin</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+
+                      {(canManageParticipants || canVerifyPayment) && (
+                        <button
+                          type="button"
+                          onClick={() => handleToggleCertClaimApproval(true)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-all cursor-pointer"
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                          <span>Setujui &amp; Buka Klaim Sekarang (Admin)</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : !verifiedParticipant ? (
                 <div className="bg-white/90 rounded-3xl border border-purple-100 p-8 text-center space-y-4 shadow-xs">
                   <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center mx-auto">
                     <ShieldCheck className="w-8 h-8" />
@@ -3750,6 +3932,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
               )}
             </div>
           </div>
+          </div>
         )}
       </main>
 
@@ -3929,7 +4112,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
                     { id: 'ALL', label: `Semua (${participants.length})` },
                     {
                       id: 'PENDING',
-                      label: `Menunggu ACC (${participants.filter((p) => p.paymentVerified === false).length})`,
+                      label: `Menunggu ACC (${participants.filter((p) => p.paymentVerified !== true).length})`,
                     },
                     {
                       id: 'VERIFIED',
@@ -3962,12 +4145,12 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
             <div className="flex-1 overflow-y-auto divide-y divide-slate-100 p-4 sm:p-6 space-y-3">
               {participants
                 .filter((p) => {
-                  if (approvalModalFilter === 'PENDING') return p.paymentVerified === false;
-                  if (approvalModalFilter === 'VERIFIED') return p.paymentVerified !== false;
+                  if (approvalModalFilter === 'PENDING') return p.paymentVerified !== true;
+                  if (approvalModalFilter === 'VERIFIED') return p.paymentVerified === true;
                   return true;
                 })
                 .map((p) => {
-                  const isVerified = p.paymentVerified !== false;
+                  const isVerified = p.paymentVerified === true;
                   return (
                     <div
                       key={p.id}
@@ -4084,7 +4267,11 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
           initialTemplate={formTemplate}
           portalShareUrl={shareRegistrationUrl}
           onClose={() => setIsFormEditorOpen(false)}
-          onSaved={(updated) => setFormTemplate(updated)}
+          onSaved={(updated) => {
+            setFormTemplate(updated);
+            updateConfig({ quota: updated.participantQuota || 30 });
+            setQuotaInput(String(updated.participantQuota || 30));
+          }}
           onCopyPortalLink={() => void handleCopyPortalUrl('register')}
         />
       )}

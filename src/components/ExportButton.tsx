@@ -18,6 +18,8 @@ export const ExportButton: React.FC = () => {
     const present = participants.filter((p) => p.status === 'PRESENT').length;
     const late = participants.filter((p) => p.status === 'LATE').length;
     const pending = participants.filter((p) => p.status === 'PENDING').length;
+    const verifiedAcc = participants.filter((p) => p.paymentVerified === true).length;
+    const quota = config.quota || 30;
     const attended = present + late;
     const rate = total > 0 ? Math.round((attended / total) * 100) : 0;
 
@@ -35,6 +37,7 @@ export const ExportButton: React.FC = () => {
       ['Penyelenggara', config.organizer || 'Muslimah Healing Journey'],
       ['Tanggal & Jam Mulai', startFormatted],
       ['Tempat / Lokasi', config.location],
+      ['Kuota & Status ACC', `${verifiedAcc} / ${quota} Peserta Terverifikasi ACC`],
       [
         'Ringkasan Kehadiran',
         `${attended} Hadir dari ${total} Peserta (${rate}%) — Tepat Waktu: ${present}, Terlambat: ${late}, Belum Hadir: ${pending}`,
@@ -48,6 +51,7 @@ export const ExportButton: React.FC = () => {
         'Tempat Tinggal / Domisili',
         'Alamat Email',
         'No. WhatsApp',
+        'Status Pembayaran (ACC)',
         'Status Kehadiran',
         'Waktu Check-in',
       ],
@@ -59,6 +63,7 @@ export const ExportButton: React.FC = () => {
         p.institution,
         p.email,
         p.phone || '-',
+        p.paymentVerified === true ? 'Sudah Di-ACC (Lunas)' : 'Menunggu ACC',
         statusLabel(p.status),
         p.checkInTime ? `${format(new Date(p.checkInTime), 'dd/MM/yyyy HH:mm:ss')} WIB` : '-',
       ]),
@@ -73,6 +78,7 @@ export const ExportButton: React.FC = () => {
       { wch: 28 }, // Institusi
       { wch: 28 }, // Email
       { wch: 18 }, // No. WhatsApp
+      { wch: 24 }, // Status Pembayaran (ACC)
       { wch: 20 }, // Status
       { wch: 24 }, // Waktu Check-in
     ];

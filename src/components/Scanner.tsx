@@ -55,6 +55,7 @@ export const Scanner: React.FC<ScannerProps> = ({
     certificateSettings,
     canVerifyPayment,
     verifyParticipantPayment,
+    activeWorkshopId,
   } = useAppContext();
   const rawId = useId();
   const readerElementId = `qr-reader-${rawId.replace(/:/g, '')}`;
@@ -140,7 +141,8 @@ export const Scanner: React.FC<ScannerProps> = ({
       const lookup = resolveCertificateVerification(
         cleanCode,
         participantsRef.current,
-        certSuffixRef.current
+        certSuffixRef.current,
+        activeWorkshopId
       );
       setCertVerifyCard(lookup);
       setScanResult(null);

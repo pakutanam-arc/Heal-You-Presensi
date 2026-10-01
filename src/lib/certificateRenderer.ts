@@ -264,7 +264,8 @@ export function getShortSignatureName(fullName: string): string {
 export function buildCertificateVerificationUrl(
   participant: Participant,
   seqIndex: number,
-  workshopId = 'main'
+  workshopIdOrSuffix = 'main',
+  explicitWorkshopId?: string
 ): string {
   const baseUrl =
     typeof window !== 'undefined'
@@ -273,11 +274,19 @@ export function buildCertificateVerificationUrl(
   const cleanId = participant.id.split('#HY')[0].trim().toUpperCase();
   const canonicalSeq = getCanonicalParticipantSeqIndex({ id: cleanId });
   const finalSeq = typeof seqIndex === 'number' && !isNaN(seqIndex) ? seqIndex : canonicalSeq;
-  const sig = computeParticipantQrSignature(cleanId, workshopId);
+  const isSuffixArg =
+    workshopIdOrSuffix.startsWith('/') ||
+    workshopIdOrSuffix.toUpperCase().includes('SERT');
+  const resolvedWorkshopId = explicitWorkshopId
+    ? explicitWorkshopId
+    : isSuffixArg
+      ? 'main'
+      : workshopIdOrSuffix || 'main';
+  const sig = computeParticipantQrSignature(cleanId, resolvedWorkshopId);
   const params = new URLSearchParams({
     verify_cert: cleanId,
     no: String(finalSeq + 1).padStart(3, '0'),
-    evt: workshopId,
+    evt: resolvedWorkshopId,
     sig,
   });
   return `${baseUrl}?${params.toString()}`;

@@ -31,7 +31,9 @@ import {
 import { cn } from '../lib/utils';
 import {
   computeApprovalSignature,
+  loadRegistrationTemplate,
   normalizePhoneForPaymentCode,
+  saveRegistrationTemplate,
 } from '../lib/registrationTemplate';
 import {
   buildWhatsAppUrl,
@@ -174,6 +176,17 @@ export const Registration: React.FC<{
   const [draftDate, setDraftDate] = useState('');
   const [draftTime, setDraftTime] = useState('');
   const [draftLocation, setDraftLocation] = useState('');
+  const [draftQuota, setDraftQuota] = useState(() =>
+    String(loadRegistrationTemplate(activeWorkshopId).participantQuota || config.quota || 30)
+  );
+  const [isEditingInlineQuota, setIsEditingInlineQuota] = useState(false);
+
+  const currentQuota = Math.max(
+    1,
+    parseInt(draftQuota, 10) || config.quota || 30
+  );
+  const verifiedAccCount = participants.filter((p) => p.paymentVerified === true).length;
+  const remainingQuotaSlots = Math.max(0, currentQuota - verifiedAccCount);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -276,12 +289,15 @@ export const Registration: React.FC<{
     setDraftEventName(config.name);
     setDraftDate(config.date);
     setDraftLocation(config.location);
+    const tplQuota = loadRegistrationTemplate(activeWorkshopId).participantQuota;
+    setDraftQuota(String(tplQuota || config.quota || 30));
     try {
       setDraftTime(format(new Date(config.startTime), 'HH:mm'));
     } catch {
       setDraftTime('08:00');
     }
   }, [
+    activeWorkshopId,
     config.organizer,
     config.tagline,
     config.eventLabel,
@@ -289,7 +305,51 @@ export const Registration: React.FC<{
     config.date,
     config.location,
     config.startTime,
+    config.quota,
   ]);
+
+  useEffect(() => {
+    const syncQuotaFromTemplate = () => {
+      const latestTpl = loadRegistrationTemplate(activeWorkshopId);
+      setDraftQuota(String(latestTpl.participantQuota || config.quota || 30));
+    };
+    let bc: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        bc = new BroadcastChannel('heal_you_portal_sync_v1');
+        bc.onmessage = (ev) => {
+          if (ev.data?.type === 'TEMPLATE_UPDATED' && (!ev.data.workshopId || ev.data.workshopId === activeWorkshopId)) {
+            syncQuotaFromTemplate();
+          }
+        };
+      } catch {
+        // Ignore
+      }
+    }
+    window.addEventListener('healyou-registration-template-updated', syncQuotaFromTemplate);
+    return () => {
+      window.removeEventListener('healyou-registration-template-updated', syncQuotaFromTemplate);
+      try {
+        bc?.close();
+      } catch {
+        // Ignore
+      }
+    };
+  }, [activeWorkshopId, config.quota]);
+
+  const handleSaveQuotaValue = (rawVal: string | number) => {
+    const parsed = typeof rawVal === 'number' ? rawVal : parseInt(String(rawVal).trim(), 10);
+    const safeQuota = Number.isFinite(parsed) && parsed >= 1 ? Math.min(5000, Math.round(parsed)) : 30;
+    const currentTpl = loadRegistrationTemplate(activeWorkshopId);
+    saveRegistrationTemplate(activeWorkshopId, {
+      ...currentTpl,
+      participantQuota: safeQuota,
+    });
+    updateConfig({ quota: safeQuota });
+    setDraftQuota(String(safeQuota));
+    setIsEditingInlineQuota(false);
+    showToast(`Kapasitas kuota peserta berhasil diperbarui menjadi ${safeQuota} peserta!`);
+  };
 
   // Handlers that update both local draft AND store live so the preview updates as you type
   const handleParticipantFieldChange = (
@@ -369,6 +429,15 @@ export const Registration: React.FC<{
       }
     }
 
+    const parsedQuota = parseInt(draftQuota.trim(), 10);
+    const safeQuota =
+      Number.isFinite(parsedQuota) && parsedQuota >= 1 ? Math.min(5000, Math.round(parsedQuota)) : 30;
+    const currentTpl = loadRegistrationTemplate(activeWorkshopId);
+    saveRegistrationTemplate(activeWorkshopId, {
+      ...currentTpl,
+      participantQuota: safeQuota,
+    });
+
     updateConfig({
       organizer: draftOrganizer.trim() || 'Muslimah Healing Journey',
       tagline: draftTagline.trim() || "Let's Heal",
@@ -377,6 +446,7 @@ export const Registration: React.FC<{
       date: draftDate || config.date,
       location: draftLocation.trim() || config.location,
       startTime: newStartTime,
+      quota: safeQuota,
     });
 
     showToast('Pengaturan acara & tampilan kartu berhasil disimpan!');
@@ -1212,7 +1282,7 @@ export const Registration: React.FC<{
                 <div
                   className={cn(
                     'p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3',
-                    selectedParticipant.paymentVerified !== false
+                    selectedParticipant.paymentVerified === true
                       ? 'bg-emerald-50/70 border-emerald-200/80'
                       : 'bg-amber-50/80 border-amber-200'
                   )}
@@ -1221,12 +1291,12 @@ export const Registration: React.FC<{
                     <div
                       className={cn(
                         'w-8 h-8 rounded-lg text-white flex items-center justify-center shrink-0 mt-0.5',
-                        selectedParticipant.paymentVerified !== false
+                        selectedParticipant.paymentVerified === true
                           ? 'bg-emerald-600'
                           : 'bg-amber-500'
                       )}
                     >
-                      {selectedParticipant.paymentVerified !== false ? (
+                      {selectedParticipant.paymentVerified === true ? (
                         <ShieldCheck className="w-4 h-4" />
                       ) : (
                         <Clock className="w-4 h-4" />
@@ -1240,18 +1310,18 @@ export const Registration: React.FC<{
                         <span
                           className={cn(
                             'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
-                            selectedParticipant.paymentVerified !== false
+                            selectedParticipant.paymentVerified === true
                               ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                               : 'bg-amber-100 text-amber-900 border border-amber-300'
                           )}
                         >
-                          {selectedParticipant.paymentVerified !== false
+                          {selectedParticipant.paymentVerified === true
                             ? `✓ Terverifikasi (${selectedParticipant.paymentVerifiedBy || 'Admin/Panitia'})`
                             : '⏳ Menunggu Approval (ACC)'}
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-600 mt-0.5">
-                        {selectedParticipant.paymentVerified !== false
+                        {selectedParticipant.paymentVerified === true
                           ? 'Kartu Pengenal (Barcode QR) peserta sudah terbuka & dapat digunakan untuk Check-in.'
                           : 'Kartu QR peserta masih terkunci. Klik Terima (ACC) setelah bukti transfer sesuai.'}
                       </p>
@@ -1259,7 +1329,7 @@ export const Registration: React.FC<{
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                    {selectedParticipant.paymentVerified === false ? (
+                    {selectedParticipant.paymentVerified !== true ? (
                       <button
                         type="button"
                         onClick={() => {
@@ -1293,7 +1363,7 @@ export const Registration: React.FC<{
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={() => {
-                        if (selectedParticipant.paymentVerified === false) {
+                        if (selectedParticipant.paymentVerified !== true) {
                           verifyParticipantPayment(selectedParticipant.id, true);
                         }
                       }}
@@ -1569,7 +1639,7 @@ export const Registration: React.FC<{
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                       Tanggal Acara
@@ -1613,6 +1683,32 @@ export const Registration: React.FC<{
                         updateConfig({ location: e.target.value });
                       }}
                       className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Kapasitas Kuota Peserta (ACC)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={5000}
+                      value={draftQuota}
+                      onChange={(e) => {
+                        setDraftQuota(e.target.value);
+                        const num = parseInt(e.target.value, 10);
+                        if (Number.isFinite(num) && num >= 1) {
+                          const safe = Math.min(5000, Math.round(num));
+                          const curTpl = loadRegistrationTemplate(activeWorkshopId);
+                          saveRegistrationTemplate(activeWorkshopId, {
+                            ...curTpl,
+                            participantQuota: safe,
+                          });
+                          updateConfig({ quota: safe });
+                        }
+                      }}
+                      placeholder="30"
+                      className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono font-bold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
                     />
                   </div>
                 </div>
@@ -1717,48 +1813,112 @@ export const Registration: React.FC<{
               </div>
             </div>
 
-            {/* Filter Status Approval Pembayaran */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              {(
-                [
-                  { id: 'ALL', label: `Semua (${participants.length})` },
-                  {
-                    id: 'PENDING',
-                    label: `Menunggu ACC (${participants.filter((p) => p.paymentVerified === false).length})`,
-                  },
-                  {
-                    id: 'VERIFIED',
-                    label: `Terverifikasi / Lunas (${participants.filter((p) => p.paymentVerified !== false).length})`,
-                  },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setPaymentFilter(tab.id)}
+            {/* Filter Status Approval Pembayaran & Live Quota ACC */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(
+                  [
+                    { id: 'ALL', label: `Semua (${participants.length})` },
+                    {
+                      id: 'PENDING',
+                      label: `Menunggu ACC (${participants.filter((p) => p.paymentVerified !== true).length})`,
+                    },
+                    {
+                      id: 'VERIFIED',
+                      label: `Terverifikasi / Lunas (${verifiedAccCount})`,
+                    },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setPaymentFilter(tab.id)}
+                    className={cn(
+                      'px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer',
+                      paymentFilter === tab.id
+                        ? 'bg-[#5e438f] text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80'
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Real-time Quota ACC Counter & Quick Edit */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span
                   className={cn(
-                    'px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer',
-                    paymentFilter === tab.id
-                      ? 'bg-[#5e438f] text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80'
+                    'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border',
+                    remainingQuotaSlots === 0
+                      ? 'bg-rose-50 text-rose-800 border-rose-200'
+                      : remainingQuotaSlots <= 5
+                        ? 'bg-amber-50 text-amber-900 border-amber-300'
+                        : 'bg-purple-50 text-[#4c3575] border-purple-200'
                   )}
                 >
-                  {tab.label}
-                </button>
-              ))}
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>
+                    Kuota ACC: <strong className="font-mono">{verifiedAccCount}/{currentQuota}</strong>
+                  </span>
+                  <span className="text-[10px] opacity-80">
+                    ({remainingQuotaSlots === 0 ? 'Penuh!' : `Sisa ${remainingQuotaSlots} slot`})
+                  </span>
+                </span>
+
+                {!isEditingInlineQuota ? (
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingInlineQuota(true)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-[#5e438f] bg-white hover:bg-purple-50 border border-purple-200 transition-colors cursor-pointer"
+                    title="Ubah kapasitas kuota peserta untuk acara ini"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    <span>Ubah Kuota</span>
+                  </button>
+                ) : (
+                  <div className="inline-flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={1}
+                      max={5000}
+                      value={draftQuota}
+                      onChange={(e) => setDraftQuota(e.target.value)}
+                      className="w-16 px-2 py-1 rounded-lg border border-purple-300 text-xs font-mono font-bold text-slate-900 text-center focus:outline-none focus:border-purple-700"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleSaveQuotaValue(draftQuota)}
+                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                    >
+                      Simpan
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraftQuota(String(loadRegistrationTemplate(activeWorkshopId).participantQuota || config.quota || 30));
+                        setIsEditingInlineQuota(false);
+                      }}
+                      className="px-2 py-1 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="max-h-[440px] overflow-y-auto divide-y divide-slate-100">
             {filteredParticipants
               .filter((p) => {
-                if (paymentFilter === 'PENDING') return p.paymentVerified === false;
-                if (paymentFilter === 'VERIFIED') return p.paymentVerified !== false;
+                if (paymentFilter === 'PENDING') return p.paymentVerified !== true;
+                if (paymentFilter === 'VERIFIED') return p.paymentVerified === true;
                 return true;
               })
               .map((p) => {
                 const isSelected = selectedParticipant?.id === p.id;
-                const isVerified = p.paymentVerified !== false;
+                const isVerified = p.paymentVerified === true;
                 return (
                   <div
                     key={p.id}

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { useAppContext } from '../store';
 import { AttendanceStatus, Participant, ParticipantFeedback } from '../types';
@@ -47,6 +47,7 @@ import {
   saveRegistrationTemplate,
   computeApprovalSignature,
   normalizePhoneForPaymentCode,
+  getCertificateClaimStatus,
 } from '../lib/registrationTemplate';
 import { RegistrationFormEditorModal } from './RegistrationFormEditorModal';
 import { format, differenceInMinutes } from 'date-fns';
@@ -93,6 +94,58 @@ export const Dashboard: React.FC<{
   const [quotaDraft, setQuotaDraft] = useState('30');
 
   const currentQuota = Math.max(1, formTemplate.participantQuota || config.quota || 30);
+  const certClaimStatus = getCertificateClaimStatus(
+    config.startTime,
+    Boolean(formTemplate.certificateClaimAdminApproved || config.certificateClaimApproved)
+  );
+
+  const handleToggleDashboardCertClaimApproval = () => {
+    const nextApproved = !certClaimStatus.isAdminApproved;
+    const updated = saveRegistrationTemplate(activeWorkshopId, {
+      ...formTemplate,
+      certificateClaimAdminApproved: nextApproved,
+    });
+    setFormTemplate(updated);
+    updateConfig({ certificateClaimApproved: nextApproved });
+    playScanBeep(nextApproved ? 'success' : 'warning');
+    setWaCardNotice(
+      nextApproved
+        ? 'Akses Klaim E-Sertifikat telah DIBUKA atas persetujuan Admin! Peserta kini dapat mengklaim sertifikat.'
+        : 'Akses Klaim E-Sertifikat dikembalikan mengikuti jadwal otomatis (2 jam setelah acara berlangsung).'
+    );
+  };
+
+  useEffect(() => {
+    const syncTpl = () => {
+      const latest = loadRegistrationTemplate(activeWorkshopId);
+      setFormTemplate(latest);
+      setQuotaDraft(String(latest.participantQuota || config.quota || 30));
+    };
+    syncTpl();
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        bc = new BroadcastChannel('heal_you_portal_sync_v1');
+        bc.onmessage = (ev) => {
+          if (ev.data?.type === 'TEMPLATE_UPDATED' && (!ev.data.workshopId || ev.data.workshopId === activeWorkshopId)) {
+            syncTpl();
+          }
+        };
+      } catch {
+        // Ignore
+      }
+    }
+    window.addEventListener('healyou-registration-template-updated', syncTpl);
+    return () => {
+      window.removeEventListener('healyou-registration-template-updated', syncTpl);
+      try {
+        bc?.close();
+      } catch {
+        // Ignore
+      }
+    };
+  }, [activeWorkshopId, config.quota]);
 
   const handleSaveDashboardQuota = (targetQuota?: number) => {
     const parsed =
@@ -201,9 +254,9 @@ export const Dashboard: React.FC<{
         ? `62${digits}`
         : digits;
     const basePortal = buildParticipantPortalUrl(activeWorkshopId, config, 'register');
-    const sig = computeApprovalSignature(activeWorkshopId, p.id);
+    const sig = computeApprovalSignature(p.id, activeWorkshopId);
     const separator = basePortal.includes('?') ? '&' : '?';
-    const approvedLink = `${basePortal}${separator}pid=${encodeURIComponent(p.id)}&acc=${encodeURIComponent(sig)}`;
+    const approvedLink = `${basePortal}${separator}pid=${encodeURIComponent(p.id)}&acc=${encodeURIComponent(sig)}&name=${encodeURIComponent(p.name)}&dom=${encodeURIComponent(p.institution || '-')}&wa=${encodeURIComponent(digits)}`;
 
     const text = [
       `Halo Kak *${p.name}*! 🌸`,
@@ -228,8 +281,8 @@ export const Dashboard: React.FC<{
     const pending = participants.filter((p) => p.status === 'PENDING').length;
     const attended = present + late;
     const attendanceRate = total > 0 ? Math.round((attended / total) * 100) : 0;
-    const unverifiedPayment = participants.filter((p) => p.paymentVerified === false).length;
-    const verifiedPayment = total - unverifiedPayment;
+    const verifiedPayment = participants.filter((p) => p.paymentVerified === true).length;
+    const unverifiedPayment = total - verifiedPayment;
 
     return {
       total,
@@ -340,7 +393,7 @@ export const Dashboard: React.FC<{
 
     const filtered = participants.filter((p) => {
       if (statusFilter === 'UNVERIFIED_PAYMENT') {
-        if (p.paymentVerified !== false) return false;
+        if (p.paymentVerified === true) return false;
       } else if (statusFilter !== 'ALL' && p.status !== statusFilter) {
         return false;
       }
@@ -753,6 +806,36 @@ export const Dashboard: React.FC<{
             )}
           </button>
 
+          <button
+            type="button"
+            onClick={handleToggleDashboardCertClaimApproval}
+            title={
+              certClaimStatus.isAdminApproved
+                ? 'Klik untuk mengembalikan ke jadwal klaim otomatis (2 jam setelah acara)'
+                : 'Klik untuk menyetujui & membuka akses klaim E-Sertifikat sekarang juga'
+            }
+            className={cn(
+              'inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border shadow-2xs',
+              certClaimStatus.isAdminApproved
+                ? 'bg-emerald-100 hover:bg-emerald-200 text-emerald-950 border-emerald-300'
+                : 'bg-amber-50 hover:bg-amber-100 text-amber-950 border-amber-300'
+            )}
+          >
+            <ShieldCheck
+              className={cn(
+                'w-3.5 h-3.5',
+                certClaimStatus.isAdminApproved ? 'text-emerald-700' : 'text-amber-700'
+              )}
+            />
+            <span>
+              {certClaimStatus.isAdminApproved
+                ? 'Klaim Sertifikat: Dibuka Admin ✓'
+                : certClaimStatus.isTimeReached
+                  ? 'Klaim Sertifikat: Terbuka (≥2 Jam)'
+                  : 'Setujui Buka Klaim Sertifikat'}
+            </span>
+          </button>
+
           {onOpenParticipantPortal && (
             <button
               type="button"
@@ -968,7 +1051,7 @@ export const Dashboard: React.FC<{
                           {p.role}
                         </span>
                       )}
-                      {p.paymentVerified === false ? (
+                      {p.paymentVerified !== true ? (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 rounded">
                           <Clock className="w-2.5 h-2.5 text-amber-700" />
                           Menunggu ACC Pembayaran
@@ -1035,7 +1118,7 @@ export const Dashboard: React.FC<{
                         </button>
                       )}
 
-                      {canVerifyPayment && p.paymentVerified === false && (
+                      {canVerifyPayment && p.paymentVerified !== true && (
                         <button
                           type="button"
                           onClick={() => {
@@ -1066,13 +1149,13 @@ export const Dashboard: React.FC<{
                             }
                           }}
                           title={
-                            p.paymentVerified === false
+                            p.paymentVerified !== true
                               ? 'Peserta belum di-ACC pembayarannya'
                               : 'Tandai hadir sekarang'
                           }
                           className={cn(
                             'inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer border',
-                            p.paymentVerified === false
+                            p.paymentVerified !== true
                               ? 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200'
                               : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border-emerald-200/60'
                           )}
@@ -1092,7 +1175,7 @@ export const Dashboard: React.FC<{
                         </button>
                       )}
 
-                      {canVerifyPayment && p.paymentVerified !== false && (
+                      {canVerifyPayment && p.paymentVerified === true && (
                         <a
                           href={buildApprovedPortalWhatsAppUrl(p)}
                           target="_blank"
@@ -1446,18 +1529,18 @@ export const Dashboard: React.FC<{
               <span
                 className={cn(
                   'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold',
-                  previewProofParticipant.paymentVerified === false
+                  previewProofParticipant.paymentVerified !== true
                     ? 'bg-amber-100 text-amber-900'
                     : 'bg-emerald-100 text-emerald-900'
                 )}
               >
-                {previewProofParticipant.paymentVerified === false
+                {previewProofParticipant.paymentVerified !== true
                   ? 'Menunggu Verifikasi / ACC'
                   : 'Pembayaran Terverifikasi (ACC)'}
               </span>
 
               <div className="flex items-center gap-2">
-                {previewProofParticipant.paymentVerified === false ? (
+                {previewProofParticipant.paymentVerified !== true ? (
                   <button
                     type="button"
                     onClick={() => {

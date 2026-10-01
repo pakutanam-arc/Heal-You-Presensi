@@ -1,6 +1,7 @@
 export interface RegistrationFormTemplate {
   shareLinkSlug: string;
   participantQuota: number;
+  certificateClaimAdminApproved?: boolean;
   // Section 1: Kartu Undangan Acara ("Muslimah Healing Day! 🌷")
   invitationTitle: string;
   greetingText: string;
@@ -67,6 +68,7 @@ export interface RegistrationFormTemplate {
 export const DEFAULT_REGISTRATION_FORM_TEMPLATE: RegistrationFormTemplate = {
   shareLinkSlug: 'HealYou-Pendaftaran',
   participantQuota: 30,
+  certificateClaimAdminApproved: false,
   invitationTitle: 'Muslimah Healing Day! 🌷',
   greetingText: "Assalamu'alaikum, Shalihah! 💕",
   introParagraph1: 'Pernah merasa lelah dan butuh me-time yang menenangkan?',
@@ -181,6 +183,10 @@ export function normalizeRegistrationTemplate(
       raw.participantQuota >= 1
         ? Math.round(raw.participantQuota)
         : d.participantQuota,
+    certificateClaimAdminApproved:
+      typeof raw.certificateClaimAdminApproved === 'boolean'
+        ? raw.certificateClaimAdminApproved
+        : Boolean(d.certificateClaimAdminApproved),
     invitationTitle:
       typeof raw.invitationTitle === 'string' && raw.invitationTitle.trim()
         ? raw.invitationTitle
@@ -421,6 +427,16 @@ export function saveRegistrationTemplate(
           detail: { workshopId, template: normalized },
         })
       );
+      if ('BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('heal_you_portal_sync_v1');
+        bc.postMessage({
+          type: 'TEMPLATE_UPDATED',
+          workshopId,
+          quota: normalized.participantQuota,
+          certificateClaimAdminApproved: Boolean(normalized.certificateClaimAdminApproved),
+        });
+        bc.close();
+      }
     } catch {
       // Ignore storage quota error
     }
@@ -438,6 +454,15 @@ export function resetRegistrationTemplate(workshopId: string): RegistrationFormT
           detail: { workshopId, template: fresh },
         })
       );
+      if ('BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('heal_you_portal_sync_v1');
+        bc.postMessage({
+          type: 'TEMPLATE_UPDATED',
+          workshopId,
+          quota: fresh.participantQuota,
+        });
+        bc.close();
+      }
     } catch {
       // Ignore
     }
@@ -635,6 +660,26 @@ function persistVerifiedPaymentsMap(workshopId: string, map: VerifiedPaymentMap)
   }
   try {
     window.dispatchEvent(new CustomEvent('healyou-payment-verification-updated'));
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel('heal_you_portal_sync_v1');
+      bc.postMessage({ type: 'PAYMENT_VERIFIED_UPDATED', workshopId });
+      bc.close();
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+export function clearVerifiedPaymentsMap(workshopId: string = 'main'): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(getVerifiedPaymentStorageKey(workshopId));
+    window.dispatchEvent(new CustomEvent('healyou-payment-verification-updated'));
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel('heal_you_portal_sync_v1');
+      bc.postMessage({ type: 'PAYMENT_VERIFIED_UPDATED', workshopId });
+      bc.close();
+    }
   } catch {
     // Ignore
   }
@@ -804,5 +849,52 @@ export function verifyApprovalSignature(
   if (!participantId || !signatureToken) return false;
   const expected = computeApprovalSignature(participantId, workshopId);
   return signatureToken.trim().toUpperCase() === expected.toUpperCase();
+}
+
+export const CERT_CLAIM_DELAY_HOURS = 2;
+export const CERT_CLAIM_DELAY_MS = CERT_CLAIM_DELAY_HOURS * 60 * 60 * 1000;
+
+export function getCertificateClaimStatus(
+  startTimeIso: string,
+  adminApproved?: boolean,
+  nowMs: number = Date.now()
+): {
+  isUnlocked: boolean;
+  isTimeReached: boolean;
+  isAdminApproved: boolean;
+  unlockTimeMs: number;
+  remainingMs: number;
+  formattedCountdown: string;
+} {
+  const parsedStart = new Date(startTimeIso).getTime();
+  const startTimeMs = Number.isFinite(parsedStart) ? parsedStart : nowMs;
+  const unlockTimeMs = startTimeMs + CERT_CLAIM_DELAY_MS;
+  const remainingMs = Math.max(0, unlockTimeMs - nowMs);
+  const isTimeReached = remainingMs <= 0;
+  const isAdminApproved = Boolean(adminApproved);
+  const isUnlocked = isAdminApproved || isTimeReached;
+
+  const totalSec = Math.ceil(remainingMs / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+
+  let formattedCountdown = '0 detik';
+  if (remainingMs > 0) {
+    const parts: string[] = [];
+    if (hours > 0) parts.push(`${hours} jam`);
+    if (minutes > 0 || hours > 0) parts.push(`${minutes} menit`);
+    parts.push(`${seconds} detik`);
+    formattedCountdown = parts.join(' ');
+  }
+
+  return {
+    isUnlocked,
+    isTimeReached,
+    isAdminApproved,
+    unlockTimeMs,
+    remainingMs,
+    formattedCountdown,
+  };
 }
 

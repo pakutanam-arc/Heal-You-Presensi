@@ -579,7 +579,8 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
           value={buildCertificateVerificationUrl(
             activeParticipant,
             activeCanonicalSeqIndex,
-            settings.numberSuffix
+            settings.numberSuffix,
+            activeWorkshopId
           )}
           size={360}
           level="M"

@@ -12,8 +12,11 @@ import {
   normalizeCertificateSettings,
 } from './lib/certificateRenderer';
 import {
+  clearVerifiedPaymentsMap,
   getParticipantPaymentRecord,
+  loadRegistrationTemplate,
   saveParticipantTransferSubmission,
+  saveRegistrationTemplate,
   setParticipantPaymentApproval,
 } from './lib/registrationTemplate';
 import {
@@ -480,6 +483,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [authSession, setAuthSession] = useState<AuthenticatedUserSession | null>(
     loadInitialAuthSession
   );
+  const authSessionRef = useRef<AuthenticatedUserSession | null>(authSession);
   const [isCloudReady, setIsCloudReady] = useState<boolean>(false);
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
   const [isCertCloudSynced, setIsCertCloudSynced] = useState<boolean>(false);
@@ -487,6 +491,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [lastCertCloudSyncAt, setLastCertCloudSyncAt] = useState<string | null>(null);
 
   const persistAuthSession = (session: AuthenticatedUserSession | null) => {
+    authSessionRef.current = session;
     setAuthSession(session);
     try {
       if (session) {
@@ -571,6 +576,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     };
 
+    let portalChannel: BroadcastChannel | null = null;
+    const syncPaymentRecordsFromStorage = () => {
+      const curId = activeWorkshopIdRef.current;
+      setParticipants((prev) =>
+        prev.map((p) => migrateParticipantDomicile(p, curId))
+      );
+    };
+
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       try {
         const ch = new BroadcastChannel('heal_you_realtime_sync_v1');
@@ -582,6 +595,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         };
       } catch {
         // Ignore if BroadcastChannel is blocked
+      }
+
+      try {
+        portalChannel = new BroadcastChannel('heal_you_portal_sync_v1');
+        portalChannel.onmessage = (ev) => {
+          const curId = activeWorkshopIdRef.current;
+          if (ev.data?.type === 'PAYMENT_VERIFIED_UPDATED' && (!ev.data.workshopId || ev.data.workshopId === curId)) {
+            syncPaymentRecordsFromStorage();
+          } else if (ev.data?.type === 'TEMPLATE_UPDATED' && (!ev.data.workshopId || ev.data.workshopId === curId)) {
+            const latestTpl = loadRegistrationTemplate(curId);
+            const nextQuota = ev.data.quota || latestTpl.participantQuota || 30;
+            const nextCertApproved =
+              typeof ev.data.certificateClaimAdminApproved === 'boolean'
+                ? ev.data.certificateClaimAdminApproved
+                : Boolean(latestTpl.certificateClaimAdminApproved);
+            setConfig((prev) =>
+              prev.quota === nextQuota && prev.certificateClaimApproved === nextCertApproved
+                ? prev
+                : { ...prev, quota: nextQuota, certificateClaimApproved: nextCertApproved }
+            );
+          }
+        };
+      } catch {
+        // Ignore
       }
     }
 
@@ -596,14 +633,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         } catch {
           // Ignore malformed JSON
         }
+      } else if (e.key && e.key.startsWith('healyou_verified_payments_v1_')) {
+        syncPaymentRecordsFromStorage();
       }
     };
 
     window.addEventListener('storage', handleStorageEvent);
+    window.addEventListener('healyou-payment-verification-updated', syncPaymentRecordsFromStorage);
     return () => {
       window.removeEventListener('storage', handleStorageEvent);
+      window.removeEventListener('healyou-payment-verification-updated', syncPaymentRecordsFromStorage);
       try {
         broadcastChannelRef.current?.close();
+        portalChannel?.close();
       } catch {
         // Ignore
       }
@@ -818,8 +860,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return;
       }
 
-      // Only allow verified paku.tanam@gmail.com to authenticate via Google Cloud
-      if (!user.emailVerified || user.email?.toLowerCase() !== ADMIN_EMAIL) {
+      const isCurrentPanitia =
+        authSessionRef.current?.role === 'panitia' ||
+        loadInitialAuthSession()?.role === 'panitia';
+      const isGoogleAdmin =
+        Boolean(user.emailVerified) && user.email?.toLowerCase() === ADMIN_EMAIL;
+
+      // Allow verified Admin (paku.tanam@gmail.com) OR any verified Google account when logged in as Panitia
+      if (!user.emailVerified || (!isGoogleAdmin && !isCurrentPanitia)) {
         await signOutFromCloud();
         setCloudUser(null);
         setIsCloudReady(false);
@@ -829,12 +877,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       setCloudUser(user);
-      persistAuthSession({
-        role: 'admin',
-        identifier: ADMIN_EMAIL,
-        displayName: user.displayName || 'Admin Utama (paku.tanam@gmail.com)',
-        loggedInAt: new Date().toISOString(),
-      });
+      if (!isCurrentPanitia && isGoogleAdmin) {
+        persistAuthSession({
+          role: 'admin',
+          identifier: ADMIN_EMAIL,
+          displayName: user.displayName || 'Admin Utama (paku.tanam@gmail.com)',
+          loggedInAt: new Date().toISOString(),
+        });
+      }
 
       setIsCloudSyncing(true);
       const uid = user.uid;
@@ -860,51 +910,55 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
 
         if (!snap.exists()) {
-          const curCfg = configRef.current;
-          // 1. Create parent workshop document first so exists(/workshops/{id}) is true for subcollections
-          await setDoc(workshopDocRef, {
-            workshopId: curEventId,
-            ownerId: uid,
-            name: clampStr(curCfg.name, 200, WORKSHOP_CONFIG.name),
-            date: clampStr(curCfg.date, 40, WORKSHOP_CONFIG.date),
-            startTime: clampStr(curCfg.startTime, 64, WORKSHOP_CONFIG.startTime),
-            location: clampStr(curCfg.location, 200, WORKSHOP_CONFIG.location),
-            organizer: clampStr(curCfg.organizer, 120, 'Muslimah Healing Journey'),
-            tagline: clampStr(curCfg.tagline, 120, "Let's Heal"),
-            eventLabel: clampStr(curCfg.eventLabel, 120, 'Agenda Workshop Psikologi'),
-            customLogoUrl: (curCfg.customLogoUrl ?? '').slice(0, 350000),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
+          if (isGoogleAdmin || curEventId === DEFAULT_WORKSHOP_ID) {
+            const curCfg = configRef.current;
+            // 1. Create parent workshop document first so exists(/workshops/{id}) is true for subcollections
+            await setDoc(workshopDocRef, {
+              workshopId: curEventId,
+              ownerId: uid,
+              name: clampStr(curCfg.name, 200, WORKSHOP_CONFIG.name),
+              date: clampStr(curCfg.date, 40, WORKSHOP_CONFIG.date),
+              startTime: clampStr(curCfg.startTime, 64, WORKSHOP_CONFIG.startTime),
+              location: clampStr(curCfg.location, 200, WORKSHOP_CONFIG.location),
+              organizer: clampStr(curCfg.organizer, 120, 'Muslimah Healing Journey'),
+              tagline: clampStr(curCfg.tagline, 120, "Let's Heal"),
+              eventLabel: clampStr(curCfg.eventLabel, 120, 'Agenda Workshop Psikologi'),
+              customLogoUrl: (curCfg.customLogoUrl ?? '').slice(0, 350000),
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
 
-          // 2. Upsert certificate settings safely
-          await upsertCertSettingsToFirestore(
-            curEventId,
-            certificateSettingsRef.current,
-            user
-          );
+          if (isGoogleAdmin) {
+            // 2. Upsert certificate settings safely
+            await upsertCertSettingsToFirestore(
+              curEventId,
+              certificateSettingsRef.current,
+              user
+            );
 
-          // 3. Seed initial participants if not already present
-          for (const p of participantsRef.current) {
-            if (!auth.currentUser || auth.currentUser.uid !== uid) break;
-            const safeId = migrateId(p.id);
-            const pRef = doc(db, 'workshops', curEventId, 'participants', safeId);
-            const pSnap = await getDoc(pRef);
-            if (!pSnap.exists()) {
-              await setDoc(pRef, {
-                id: safeId,
-                workshopId: curEventId,
-                ownerId: uid,
-                name: clampStr(p.name, 160, 'Peserta'),
-                email: clampStr(p.email, 160, '-'),
-                institution: clampStr(p.institution, 160, '-'),
-                role: clampStr(p.role, 100, 'Peserta Workshop'),
-                phone: (p.phone ?? '').trim().slice(0, 60),
-                status: p.status,
-                checkInTime: (p.checkInTime ?? '').slice(0, 64),
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
+            // 3. Seed initial participants if not already present
+            for (const p of participantsRef.current) {
+              if (!auth.currentUser || auth.currentUser.uid !== uid) break;
+              const safeId = migrateId(p.id);
+              const pRef = doc(db, 'workshops', curEventId, 'participants', safeId);
+              const pSnap = await getDoc(pRef);
+              if (!pSnap.exists()) {
+                await setDoc(pRef, {
+                  id: safeId,
+                  workshopId: curEventId,
+                  ownerId: uid,
+                  name: clampStr(p.name, 160, 'Peserta'),
+                  email: clampStr(p.email, 160, '-'),
+                  institution: clampStr(p.institution, 160, '-'),
+                  role: clampStr(p.role, 100, 'Peserta Workshop'),
+                  phone: (p.phone ?? '').trim().slice(0, 60),
+                  status: p.status,
+                  checkInTime: (p.checkInTime ?? '').slice(0, 64),
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              }
             }
           }
         } else {
@@ -953,6 +1007,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       } catch (error) {
         if (auth.currentUser && auth.currentUser.uid === uid) {
+          setIsCloudReady(true);
           handleFirestoreError(error, OperationType.WRITE, `workshops/${curEventId}`);
         }
       } finally {
@@ -1362,6 +1417,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       tagline: config.tagline || "Let's Heal",
       eventLabel: config.eventLabel || 'Agenda Workshop Psikologi',
       customLogoUrl: config.customLogoUrl || '',
+      quota: 30,
     };
 
     const initialNewCertSettings: CertificateSettings = normalizeCertificateSettings({
@@ -1537,12 +1593,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const syncParticipantUpdateToCloud = async (id: string, updates: Record<string, unknown>) => {
     const activeUser = auth.currentUser;
-    if (
-      !cloudUser ||
-      !activeUser ||
-      !activeUser.emailVerified ||
-      activeUser.email?.toLowerCase() !== ADMIN_EMAIL
-    ) {
+    if (!cloudUser || !activeUser || !activeUser.emailVerified) {
+      return;
+    }
+    const isStatusOnly = Object.keys(updates).every(
+      (k) => k === 'status' || k === 'checkInTime'
+    );
+    if (!isStatusOnly && activeUser.email?.toLowerCase() !== ADMIN_EMAIL) {
       return;
     }
     const curEventId = activeWorkshopIdRef.current;
@@ -1796,6 +1853,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         role: clampStr(row.role, 100, 'Peserta Workshop'),
         phone: (row.phone ?? '').trim().slice(0, 60),
         status: 'PENDING',
+        paymentVerified: false,
       });
     }
 
@@ -1960,9 +2018,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateConfig = (updates: Partial<WorkshopConfig>) => {
-    if (!canManageParticipants) return;
+    const isCertClaimToggleOnly =
+      Object.keys(updates).every((k) => k === 'certificateClaimApproved') && canVerifyPayment;
+    if (!canManageParticipants && !isCertClaimToggleOnly) return;
     const merged: WorkshopConfig = { ...config, ...updates };
     setConfig(merged);
+
+    if (
+      (typeof updates.quota === 'number' && updates.quota >= 1) ||
+      typeof updates.certificateClaimApproved === 'boolean'
+    ) {
+      const curEventId = activeWorkshopIdRef.current;
+      const currentTpl = loadRegistrationTemplate(curEventId);
+      const nextQuota =
+        typeof updates.quota === 'number' && updates.quota >= 1
+          ? updates.quota
+          : currentTpl.participantQuota;
+      const nextCertApproved =
+        typeof updates.certificateClaimApproved === 'boolean'
+          ? updates.certificateClaimApproved
+          : Boolean(currentTpl.certificateClaimAdminApproved);
+      if (
+        currentTpl.participantQuota !== nextQuota ||
+        Boolean(currentTpl.certificateClaimAdminApproved) !== nextCertApproved
+      ) {
+        saveRegistrationTemplate(curEventId, {
+          ...currentTpl,
+          participantQuota: nextQuota,
+          certificateClaimAdminApproved: nextCertApproved,
+        });
+      }
+    }
 
     if (
       cloudUser &&
@@ -2021,8 +2107,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const resetData = () => {
     if (!canManageParticipants) return;
     const curEventId = activeWorkshopIdRef.current;
-    setParticipants(INITIAL_PARTICIPANTS);
-    setConfig(WORKSHOP_CONFIG);
+    clearVerifiedPaymentsMap(curEventId);
+    const currentTpl = loadRegistrationTemplate(curEventId);
+    saveRegistrationTemplate(curEventId, {
+      ...currentTpl,
+      participantQuota: WORKSHOP_CONFIG.quota || 30,
+    });
+    setParticipants(INITIAL_PARTICIPANTS.map((p) => migrateParticipantDomicile(p, curEventId)));
+    setConfig({ ...WORKSHOP_CONFIG, quota: WORKSHOP_CONFIG.quota || 30 });
     setCertificateSettings({ ...DEFAULT_CERT_SETTINGS });
     setFeedbacks({});
 
@@ -2097,13 +2189,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           message: 'Kata sandi yang Anda masukkan tidak sesuai. Silakan periksa kembali.',
         };
       }
-      if (auth.currentUser) {
-        try {
-          await signOutFromCloud();
-        } catch {
-          // Ignore signout error
-        }
-      }
       const session: AuthenticatedUserSession = {
         role: 'panitia',
         identifier: matchedPanitia.identifier,
@@ -2111,6 +2196,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         loggedInAt: new Date().toISOString(),
       };
       persistAuthSession(session);
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        setCloudUser(auth.currentUser);
+        setIsCloudReady(true);
+      }
       return {
         success: true,
         message: `Berhasil masuk sebagai ${matchedPanitia.displayName}.`,
@@ -2152,6 +2241,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (error) {
       setIsCloudSyncing(false);
       console.error('Google Sign-in failed:', error);
+      const errCode = (error as { code?: string })?.code || '';
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'domain-hosting-anda.netlify.app';
+
+      if (errCode === 'auth/unauthorized-domain' || errMsg.includes('unauthorized-domain')) {
+        return {
+          success: false,
+          message: `Domain "${host}" belum diizinkan di Firebase Authorized Domains. Buka Firebase Console → Authentication → Settings → Authorized domains, lalu tambahkan "${host}" agar login Google & Cloud Sync dapat terhubung di Netlify.`,
+        };
+      }
+      if (errCode === 'auth/popup-blocked' || errMsg.includes('popup-blocked')) {
+        return {
+          success: false,
+          message: 'Jendela popup Google diblokir oleh browser. Izinkan popup untuk situs ini lalu coba kembali.',
+        };
+      }
+      if (errCode === 'auth/popup-closed-by-user' || errMsg.includes('popup-closed-by-user')) {
+        return {
+          success: false,
+          message: 'Jendela login Google ditutup sebelum proses otentikasi selesai.',
+        };
+      }
       return {
         success: false,
         message: 'Otentikasi Google dibatalkan atau tidak dapat diselesaikan.',
@@ -2175,6 +2286,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const connectCloud = async () => {
+    if (authSessionRef.current?.role === 'panitia') {
+      setIsCloudSyncing(true);
+      try {
+        const user = await signInWithGoogleCloud();
+        if (!user || !user.emailVerified) {
+          await signOutFromCloud();
+          setIsCloudSyncing(false);
+          throw new Error('Akun Google belum terverifikasi untuk sinkronisasi Cloud.');
+        }
+        setCloudUser(user);
+        setIsCloudReady(true);
+        setIsCloudSyncing(false);
+        return;
+      } catch (error) {
+        setIsCloudSyncing(false);
+        const errCode = (error as { code?: string })?.code || '';
+        const errMsg = error instanceof Error ? error.message : String(error);
+        const host =
+          typeof window !== 'undefined'
+            ? window.location.hostname
+            : 'domain-hosting-anda.netlify.app';
+        if (errCode === 'auth/unauthorized-domain' || errMsg.includes('unauthorized-domain')) {
+          throw new Error(
+            `Domain "${host}" belum diizinkan di Firebase Authorized Domains. Buka Firebase Console → Authentication → Settings → Authorized domains, lalu tambahkan "${host}".`
+          );
+        }
+        if (errCode === 'auth/popup-blocked' || errMsg.includes('popup-blocked')) {
+          throw new Error(
+            'Jendela popup Google diblokir oleh browser. Izinkan popup untuk situs ini lalu coba kembali.'
+          );
+        }
+        throw new Error('Otentikasi Google Cloud dibatalkan atau gagal.');
+      }
+    }
+
     const res = await loginWithGoogleAdmin();
     if (!res.success) {
       throw new Error(res.message);

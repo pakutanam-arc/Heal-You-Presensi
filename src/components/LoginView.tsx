@@ -221,9 +221,32 @@ export const LoginView: React.FC<LoginViewProps> = ({ onOpenPublicRegistration }
             </div>
 
             {errorMsg && (
-              <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 flex items-start gap-2.5 text-xs text-rose-800">
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <span className="leading-relaxed font-medium">{errorMsg}</span>
+              <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 flex flex-col gap-2 text-xs text-rose-800">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed font-medium">{errorMsg}</span>
+                </div>
+                {errorMsg.includes('Authorized Domains') && typeof window !== 'undefined' && (
+                  <div className="pl-6 pt-1 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(window.location.hostname);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-900 font-semibold cursor-pointer transition-colors"
+                    >
+                      Salin Domain ({window.location.hostname})
+                    </button>
+                    <a
+                      href="https://console.firebase.google.com/project/gen-lang-client-0421236941/authentication/settings"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1.5 rounded-lg bg-[#2b184a] hover:bg-[#3f266b] text-white font-semibold transition-colors"
+                    >
+                      Buka Firebase Authorized Domains
+                    </a>
+                  </div>
+                )}
               </div>
             )}
 

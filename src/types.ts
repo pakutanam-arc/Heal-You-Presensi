@@ -68,4 +68,5 @@ export interface WorkshopConfig {
   startTime: string; // ISO string
   customLogoUrl?: string;
   quota?: number;
+  certificateClaimApproved?: boolean;
 }

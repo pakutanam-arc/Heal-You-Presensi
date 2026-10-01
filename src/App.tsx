@@ -81,6 +81,7 @@ function AppContent() {
     authSession,
     isAuthenticated,
     isAdmin,
+    isPanitia,
     canManageParticipants,
     isCloudSyncing,
     logoutApp,
@@ -124,7 +125,8 @@ function AppContent() {
     const result = resolveCertificateVerification(
       rawCodeOrId,
       participants,
-      certificateSettings.numberSuffix
+      certificateSettings.numberSuffix,
+      activeWorkshopId
     );
     setCertVerificationTarget(result);
     setScannerPurpose('verify_cert');
@@ -144,13 +146,14 @@ function AppContent() {
       const result = resolveCertificateVerification(
         window.location.href,
         participants,
-        certificateSettings.numberSuffix
+        certificateSettings.numberSuffix,
+        evtParam || activeWorkshopId
       );
       setCertVerificationTarget(result);
       setScannerPurpose('verify_cert');
       setActiveTab('scanner');
     }
-  }, [participants.length, certificateSettings.numberSuffix]);
+  }, [participants.length, certificateSettings.numberSuffix, activeWorkshopId]);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [isEventsMenuOpen, setIsEventsMenuOpen] = useState(false);
   const [isCreatingNewEvent, setIsCreatingNewEvent] = useState(false);
@@ -517,27 +520,40 @@ function AppContent() {
                   )}
                 </div>
 
-                {/* Cloud Sync Button (Compact) */}
-                {isAdmin && !cloudUser && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setCloudError(null);
-                      try {
-                        await connectCloud();
-                      } catch {
-                        setCloudError('Login Google dibatalkan atau gagal.');
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/80 px-2.5 py-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
-                    title="Sinkronkan dengan Google Cloud"
-                  >
-                    <Cloud className="w-3.5 h-3.5" />
-                    <span className="hidden xl:inline">
-                      {isCloudSyncing ? 'Sync...' : 'Cloud Sync'}
+                {/* Cloud Sync Button / Status (Compact) */}
+                {(isAdmin || isPanitia) &&
+                  (cloudUser ? (
+                    <span
+                      className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200/90 px-2.5 py-1.5 rounded-xl shrink-0"
+                      title={`Terhubung ke Firebase Cloud (${cloudUser.email})`}
+                    >
+                      <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+                      <span className="hidden xl:inline">Cloud Aktif</span>
                     </span>
-                  </button>
-                )}
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setCloudError(null);
+                        try {
+                          await connectCloud();
+                        } catch (err) {
+                          setCloudError(
+                            err instanceof Error && err.message
+                              ? err.message
+                              : 'Login Google dibatalkan atau gagal.'
+                          );
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/80 px-2.5 py-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
+                      title="Sinkronkan dengan Google Cloud (Firebase)"
+                    >
+                      <Cloud className="w-3.5 h-3.5" />
+                      <span className="hidden xl:inline">
+                        {isCloudSyncing ? 'Sync...' : 'Cloud Sync'}
+                      </span>
+                    </button>
+                  ))}
 
                 {/* User Role & Logout Pill */}
                 <div
@@ -921,12 +937,33 @@ function AppContent() {
       </header>
 
       {cloudError && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-xs text-amber-800 flex items-center justify-center gap-2">
-          <span>{cloudError}</span>
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-900 flex flex-wrap items-center justify-center gap-2.5">
+          <span className="font-medium text-center">{cloudError}</span>
+          {cloudError.includes('Authorized Domains') && typeof window !== 'undefined' && (
+            <div className="inline-flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(window.location.hostname);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-amber-200/80 hover:bg-amber-300 text-amber-950 font-semibold cursor-pointer transition-colors"
+              >
+                Salin Domain ({window.location.hostname})
+              </button>
+              <a
+                href="https://console.firebase.google.com/project/gen-lang-client-0421236941/authentication/settings"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1 rounded-lg bg-[#5e438f] hover:bg-[#4c3575] text-white font-semibold transition-colors"
+              >
+                Buka Firebase Console
+              </a>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setCloudError(null)}
-            className="underline font-medium cursor-pointer"
+            className="underline font-semibold cursor-pointer ml-1"
           >
             Tutup
           </button>

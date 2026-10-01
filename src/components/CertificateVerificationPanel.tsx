@@ -9,7 +9,10 @@ import {
   getCanonicalParticipantSeqIndex,
   formatOfficialCertificateNumber,
 } from '../lib/certificateRenderer';
-import { decodeQrFromUploadedCardOrImage } from '../lib/qrSecurity';
+import {
+  decodeQrFromUploadedCardOrImage,
+  verifyScannedParticipantQr,
+} from '../lib/qrSecurity';
 import { formatSafeDateStr } from '../lib/whatsapp';
 import {
   ShieldCheck,
@@ -698,7 +701,8 @@ export const CertificateVerificationPanel: React.FC<CertificateVerificationPanel
 export function resolveCertificateVerification(
   rawInput: string,
   participants: Participant[],
-  numberSuffix: string
+  numberSuffix: string,
+  activeWorkshopId = 'main'
 ): VerificationLookupResult {
   const parsed = parseCertificateQrOrInput(rawInput);
   const queryText = parsed.participantId || rawInput.trim();
@@ -728,8 +732,27 @@ export function resolveCertificateVerification(
 
   if (foundIdx >= 0) {
     const p = participants[foundIdx];
-    const expectedSig = computeParticipantQrSignature(p.id);
-    if (parsed.qrSig && parsed.qrSig.toUpperCase() !== expectedSig) {
+    const expectedSigMain = computeParticipantQrSignature(p.id, 'main');
+    const expectedSigEvt = computeParticipantQrSignature(
+      p.id,
+      parsed.workshopId || activeWorkshopId || 'main'
+    );
+    const expectedSigActive = computeParticipantQrSignature(p.id, activeWorkshopId || 'main');
+    const idCardCheck = verifyScannedParticipantQr(
+      rawInput,
+      participants,
+      parsed.workshopId || activeWorkshopId || 'main'
+    );
+
+    const incomingSig = (parsed.qrSig || parsed.signature || '').trim().toUpperCase();
+    const isSigMatch =
+      !incomingSig ||
+      incomingSig === expectedSigMain.toUpperCase() ||
+      incomingSig === expectedSigEvt.toUpperCase() ||
+      incomingSig === expectedSigActive.toUpperCase() ||
+      (!idCardCheck.isForgedSignature && idCardCheck.isSignatureVerified);
+
+    if (incomingSig && !isSigMatch) {
       return {
         query: `${p.id} (Signature Tidak Cocok)`,
         participant: null,
@@ -744,7 +767,7 @@ export function resolveCertificateVerification(
     const certNumber = formatOfficialCertificateNumber(p.id, participants, numberSuffix);
     const sourceType: 'CERT_QR' | 'ID_CARD_QR' | 'MANUAL_LOOKUP' = parsed.isExplicitCert
       ? 'CERT_QR'
-      : parsed.isSignedParticipantCard
+      : parsed.isSignedParticipantCard || parsed.isSignedIdCard
         ? 'ID_CARD_QR'
         : 'MANUAL_LOOKUP';
 
@@ -754,8 +777,8 @@ export function resolveCertificateVerification(
       seqIndex: canonicalIdx,
       certNumber,
       verifiedAt: nowStr,
-      qrSignature: expectedSig,
-      isSignatureValid: Boolean(parsed.qrSig),
+      qrSignature: expectedSigEvt,
+      isSignatureValid: Boolean(incomingSig),
       sourceType,
     };
   }
