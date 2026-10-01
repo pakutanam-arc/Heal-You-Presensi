@@ -9,7 +9,8 @@ export const WORKSHOP_CONFIG: WorkshopConfig = {
   date: new Date().toISOString().split('T')[0],
   location: "Grand Ballroom, Hotel Mulia",
   // Set start time to 5 minutes ago to simulate some people being late
-  startTime: new Date(Date.now() - 5 * 60000).toISOString(), 
+  startTime: new Date(Date.now() - 5 * 60000).toISOString(),
+  quota: 30,
 };
 
 export const INITIAL_PARTICIPANTS: Participant[] = [
@@ -17,56 +18,80 @@ export const INITIAL_PARTICIPANTS: Participant[] = [
     id: "HY-001",
     name: "Dr. Sarah Jenkins",
     email: "sarah.j@university.edu",
-    institution: "National Psych Institute",
-    status: "PENDING"
+    institution: "Depok, Jawa Barat",
+    role: "Psikolog & Merangkai Bunga",
+    phone: "081234567801",
+    status: "PENDING",
+    paymentVerified: false,
   },
   {
     id: "HY-002",
     name: "Michael Chen",
     email: "m.chen@clinic.org",
-    institution: "City Health Clinic",
-    status: "PENDING"
+    institution: "Jakarta Selatan",
+    role: "Konselor & Membaca Buku",
+    phone: "081234567802",
+    status: "PENDING",
+    paymentVerified: false,
   },
   {
     id: "HY-003",
     name: "Elena Rodriguez",
     email: "elena.r@hospital.com",
-    institution: "Memorial Hospital",
-    status: "PENDING"
+    institution: "Bogor, Jawa Barat",
+    role: "Ibu Rumah Tangga & Journaling",
+    phone: "081234567803",
+    status: "PENDING",
+    paymentVerified: false,
   },
   {
     id: "HY-004",
     name: "Dr. James Wilson",
     email: "jwilson@privatepractice.net",
-    institution: "Wilson Psychological Services",
-    status: "PENDING"
+    institution: "Tangerang Selatan",
+    role: "Pendidik & Berkebun",
+    phone: "081234567804",
+    status: "PENDING",
+    paymentVerified: false,
   },
   {
     id: "HY-005",
     name: "Anita Desai",
     email: "anita.desai@university.edu",
-    institution: "National Psych Institute",
-    status: "PENDING"
+    institution: "Margonda, Depok",
+    role: "Mahasiswi & Melukis",
+    phone: "081234567805",
+    status: "PENDING",
+    paymentVerified: false,
   },
   {
     id: "HY-006",
     name: "David Kim",
     email: "dkim@wellness.org",
-    institution: "Wellness Center",
-    status: "PENDING"
+    institution: "Bekasi, Jawa Barat",
+    role: "Wirausaha & Fotografi",
+    phone: "081234567806",
+    status: "PENDING",
+    paymentVerified: false,
   },
   {
     id: "HY-007",
     name: "Rachel Green",
     email: "rachel.g@hospital.com",
-    institution: "Memorial Hospital",
-    status: "PENDING"
+    institution: "Jakarta Pusat",
+    role: "Desainer & Merangkai Bunga",
+    phone: "081234567807",
+    status: "PENDING",
+    paymentVerified: false,
   },
   {
     id: "HY-008",
     name: "Dr. Marcus Johnson",
     email: "mjohnson@clinic.org",
-    institution: "City Health Clinic",
-    status: "PENDING"
+    institution: "Bandung, Jawa Barat",
+    role: "Praktisi Mindfulness & Menulis",
+    phone: "081234567808",
+    status: "PENDING",
+    paymentVerified: false,
   }
 ];

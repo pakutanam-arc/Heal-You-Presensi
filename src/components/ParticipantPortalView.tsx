@@ -7,9 +7,22 @@ import { HealYouLogo } from './HealYouLogo';
 import {
   renderParticipantCardCanvas,
   buildParticipantPortalUrl,
+  copyPortalLinkWithTitle,
   formatSafeDateStr,
   formatSafeTimeStr,
 } from '../lib/whatsapp';
+import {
+  RegistrationFormTemplate,
+  loadRegistrationTemplate,
+  saveRegistrationTemplate,
+  isParticipantPaymentVerified,
+  markParticipantPaymentVerified,
+  normalizePhoneForPaymentCode,
+  saveParticipantTransferSubmission,
+  computeApprovalSignature,
+  verifyApprovalSignature,
+} from '../lib/registrationTemplate';
+import { RegistrationFormEditorModal } from './RegistrationFormEditorModal';
 import {
   renderBotanicalCertificateCanvas,
   getCanonicalParticipantSeqIndex,
@@ -57,6 +70,10 @@ import {
   Image as ImageIcon,
   Link2,
   Pencil,
+  ExternalLink,
+  CreditCard,
+  KeyRound,
+  Unlock,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -64,6 +81,7 @@ interface ParticipantPortalViewProps {
   initialTab?: 'register' | 'certificate';
   configFallback?: WorkshopConfig;
   isAdminPreview?: boolean;
+  openEditorInitially?: boolean;
   onExitAdminPreview?: () => void;
 }
 
@@ -159,6 +177,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
   initialTab = 'register',
   configFallback,
   isAdminPreview = false,
+  openEditorInitially = false,
   onExitAdminPreview,
 }) => {
   const {
@@ -168,13 +187,64 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
     feedbacks,
     submitParticipantFeedback,
     activeWorkshopId,
+    canManageParticipants,
+    canVerifyPayment,
     registerParticipant,
     updateParticipant,
+    verifyParticipantPayment,
+    updateConfig,
   } = useAppContext();
 
   const activeConfig = storeConfig?.name ? storeConfig : configFallback || storeConfig;
   const localCardStorageKey = `heal_you_local_uploaded_card_${activeWorkshopId}`;
   const localSelfRegKey = `heal_you_self_reg_${activeWorkshopId}`;
+
+  const [formTemplate, setFormTemplate] = useState<RegistrationFormTemplate>(() =>
+    loadRegistrationTemplate(activeWorkshopId)
+  );
+  const [isFormEditorOpen, setIsFormEditorOpen] = useState<boolean>(openEditorInitially);
+
+  useEffect(() => {
+    setFormTemplate(loadRegistrationTemplate(activeWorkshopId));
+  }, [activeWorkshopId]);
+
+  useEffect(() => {
+    const handleTemplateUpdate = (evt: Event) => {
+      const customEvt = evt as CustomEvent<{
+        workshopId: string;
+        template: RegistrationFormTemplate;
+      }>;
+      if (
+        !customEvt.detail?.workshopId ||
+        customEvt.detail.workshopId === activeWorkshopId
+      ) {
+        setFormTemplate(loadRegistrationTemplate(activeWorkshopId));
+      }
+    };
+    window.addEventListener('healyou-registration-template-updated', handleTemplateUpdate);
+    const handlePaymentVerifyUpdate = () => setPaymentVerifyTick((t) => t + 1);
+    window.addEventListener('healyou-payment-verification-updated', handlePaymentVerifyUpdate);
+    const handleStorageChange = () => {
+      setFormTemplate(loadRegistrationTemplate(activeWorkshopId));
+      setPaymentVerifyTick((t) => t + 1);
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('healyou-registration-template-updated', handleTemplateUpdate);
+      window.removeEventListener('healyou-payment-verification-updated', handlePaymentVerifyUpdate);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, [activeWorkshopId]);
+
+  const [isEditingQuotaInline, setIsEditingQuotaInline] = useState<boolean>(false);
+  const [quotaInputDraft, setQuotaInputDraft] = useState<string>('30');
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      const slug = formTemplate.shareLinkSlug || 'HealYou-Pendaftaran';
+      document.title = `${slug} | ${formTemplate.invitationTitle || 'Heal You'}`;
+    }
+  }, [formTemplate.shareLinkSlug, formTemplate.invitationTitle]);
 
   const [portalTab, setPortalTab] = useState<'register' | 'certificate'>(initialTab);
   const [hideAdminBanner, setHideAdminBanner] = useState(false);
@@ -185,7 +255,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [institution, setInstitution] = useState('');
+  const [domicile, setDomicile] = useState('');
   const [role, setRole] = useState('');
   const [feelingBeforeEvent, setFeelingBeforeEvent] = useState<string>('');
   const [followedHealYou, setFollowedHealYou] = useState<string>('');
@@ -194,10 +264,22 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
   const [hopeOrPrayer, setHopeOrPrayer] = useState<string>('');
   const [transferFileName, setTransferFileName] = useState<string>('');
   const [transferPreviewDataUrl, setTransferPreviewDataUrl] = useState<string>('');
+  const [paymentVerifyTick, setPaymentVerifyTick] = useState<number>(0);
+  const [showAdminApprovalModal, setShowAdminApprovalModal] = useState<boolean>(false);
+  const [approvalModalFilter, setApprovalModalFilter] = useState<'ALL' | 'PENDING' | 'VERIFIED'>(
+    'ALL'
+  );
+  const [lookupStatusInput, setLookupStatusInput] = useState<string>('');
+  const [lookupStatusMessage, setLookupStatusMessage] = useState<string | null>(null);
+  const [reuploadSuccessNotice, setReuploadSuccessNotice] = useState<boolean>(false);
+  const reuploadInputRef = useRef<HTMLInputElement | null>(null);
   const [followedSupporter, setFollowedSupporter] = useState<string>('');
   const [commitmentStatement, setCommitmentStatement] = useState<string>('');
   const [copiedRekening, setCopiedRekening] = useState(false);
   const [editingParticipantId, setEditingParticipantId] = useState<string | null>(null);
+  const [viewModeAfterReg, setViewModeAfterReg] = useState<'card' | 'form'>(
+    isAdminPreview ? 'form' : 'card'
+  );
   const [justUpdatedData, setJustUpdatedData] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [duplicateParticipant, setDuplicateParticipant] = useState<Participant | null>(null);
@@ -294,7 +376,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Keep registeredParticipant synced with live participant updates (all 4 profile fields + status)
+  // Keep registeredParticipant synced with live participant updates (all 4 profile fields + status + payment approval)
   useEffect(() => {
     if (!registeredParticipant) return;
     const fresh = participants.find(
@@ -307,11 +389,68 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
         fresh.phone !== registeredParticipant.phone ||
         fresh.role !== registeredParticipant.role ||
         fresh.institution !== registeredParticipant.institution ||
-        fresh.email !== registeredParticipant.email)
+        fresh.email !== registeredParticipant.email ||
+        fresh.paymentVerified !== registeredParticipant.paymentVerified ||
+        fresh.paymentProofUrl !== registeredParticipant.paymentProofUrl ||
+        fresh.paymentVerifiedBy !== registeredParticipant.paymentVerifiedBy)
     ) {
       setRegisteredParticipant(fresh);
     }
   }, [participants, registeredParticipant]);
+
+  // Handle signed approval link from Admin/Panitia WhatsApp (?pid=HY-XXX&acc=ACC-...)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const pidParam = params.get('pid')?.trim().toUpperCase();
+      const accParam = params.get('acc')?.trim().toUpperCase();
+      if (!pidParam) return;
+
+      const isSignedValid = accParam
+        ? verifyApprovalSignature(pidParam, activeWorkshopId, accParam)
+        : false;
+
+      let target = participants.find((p) => p.id.toUpperCase() === pidParam) || null;
+
+      if (!target && params.get('name')) {
+        target = {
+          id: pidParam,
+          name: params.get('name') || 'Peserta Workshop',
+          phone: params.get('phone') || '',
+          role: params.get('role') || 'Peserta Workshop',
+          institution: params.get('dom') || '-',
+          email: '-',
+          status: 'PENDING',
+          paymentVerified: isSignedValid,
+          paymentVerifiedBy: isSignedValid ? 'Admin / Panitia' : undefined,
+        };
+      }
+
+      if (target) {
+        if (isSignedValid) {
+          markParticipantPaymentVerified(
+            activeWorkshopId,
+            target.phone,
+            target.id,
+            'ADMIN-ACC',
+            'Admin / Panitia'
+          );
+          target = {
+            ...target,
+            paymentVerified: true,
+            paymentVerifiedBy: target.paymentVerifiedBy || 'Admin / Panitia',
+          };
+        }
+        setRegisteredParticipant(target);
+        setVerifiedParticipant(target);
+        setViewModeAfterReg('card');
+        setPaymentVerifyTick((t) => t + 1);
+      }
+    } catch {
+      // Ignore URL parse error
+    }
+  }, [activeWorkshopId, participants.length]);
 
   // Keep verifiedParticipant synced with live participant updates (all 4 profile fields + status)
   useEffect(() => {
@@ -641,7 +780,11 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
 
   const handleCopyRekening = async () => {
     try {
-      await navigator.clipboard.writeText('8901562030');
+      const cleanAcc =
+        formTemplate.q9BankAccount.replace(/[^0-9]/g, '') ||
+        formTemplate.q9BankAccount ||
+        '8901562030';
+      await navigator.clipboard.writeText(cleanAcc);
       setCopiedRekening(true);
       window.setTimeout(() => setCopiedRekening(false), 2500);
     } catch {
@@ -651,17 +794,22 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
 
   const handleStartEditRegistered = (target: Participant) => {
     setEditingParticipantId(target.id);
+    setViewModeAfterReg('form');
     setJustUpdatedData(false);
     setFormError(null);
     setDuplicateParticipant(null);
     setFullName(target.name);
     setPhone(target.phone || '');
     setRole(target.role || '');
-    setInstitution(target.institution || '');
+    setDomicile(target.institution || '');
     if (savedFormDetails && savedFormDetails.participantId.toUpperCase() === target.id.toUpperCase()) {
-      setFeelingBeforeEvent(savedFormDetails.feelingBeforeEvent || 'Senang dan antusias! 😍');
-      setFollowedHealYou(savedFormDetails.followedHealYou || 'Sudah dong :)');
-      if (HEALING_WOUND_OPTIONS.includes(savedFormDetails.healingTarget)) {
+      setFeelingBeforeEvent(
+        savedFormDetails.feelingBeforeEvent || formTemplate.q5FeelingOptions[0] || 'Senang dan antusias! 😍'
+      );
+      setFollowedHealYou(
+        savedFormDetails.followedHealYou || formTemplate.q6FollowOptions[0] || 'Sudah dong :)'
+      );
+      if (formTemplate.q7WoundOptions.includes(savedFormDetails.healingTarget)) {
         setHealingWoundChoice(savedFormDetails.healingTarget);
         setHealingWoundOther('');
       } else if (savedFormDetails.healingTarget) {
@@ -673,14 +821,16 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
       setTransferPreviewDataUrl(savedFormDetails.transferPreviewDataUrl || '');
       setFollowedSupporter(savedFormDetails.followedSupporter || '');
       setCommitmentStatement(
-        savedFormDetails.commitmentStatement || COMMITMENT_OPTIONS[0]
+        savedFormDetails.commitmentStatement ||
+          formTemplate.q11CommitmentOptions[0] ||
+          COMMITMENT_OPTIONS[0]
       );
     } else {
-      setFeelingBeforeEvent('Senang dan antusias! 😍');
-      setFollowedHealYou('Sudah dong :)');
-      setHealingWoundChoice('Anxiety');
+      setFeelingBeforeEvent(formTemplate.q5FeelingOptions[0] || 'Senang dan antusias! 😍');
+      setFollowedHealYou(formTemplate.q6FollowOptions[0] || 'Sudah dong :)');
+      setHealingWoundChoice(formTemplate.q7WoundOptions[0] || 'Anxiety');
       setTransferFileName('Bukti_Transfer_Tersimpan.jpg');
-      setCommitmentStatement(COMMITMENT_OPTIONS[0]);
+      setCommitmentStatement(formTemplate.q11CommitmentOptions[0] || COMMITMENT_OPTIONS[0]);
     }
   };
 
@@ -692,45 +842,46 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
     const cleanName = fullName.trim();
     const cleanPhone = phone.trim();
     const cleanFavoriteActivity = role.trim();
-    const cleanDomicile = institution.trim();
+    const cleanDomicile = domicile.trim();
     const cleanEmail = email.trim() || '-';
     const resolvedHealingTarget =
       healingWoundChoice === 'OTHER' ? healingWoundOther.trim() : healingWoundChoice.trim();
 
     if (!cleanName) {
-      setFormError('Shalihah, mohon isi "Siapa Nama kamu di Bumi?" terlebih dahulu ya 😊💕');
+      setFormError(`Shalihah, mohon isi "${formTemplate.q1NameLabel}" terlebih dahulu ya 😊💕`);
       return;
     }
     if (!cleanPhone) {
-      setFormError('Shalihah, mohon isi "No Whatsapp kamu?" terlebih dahulu ya 📞');
+      setFormError(`Shalihah, mohon isi "${formTemplate.q2PhoneLabel}" terlebih dahulu ya 📞`);
       return;
     }
     if (!cleanFavoriteActivity) {
-      setFormError('Shalihah, mohon isi "Pekerjaan / Kegiatan favorite-mu?" terlebih dahulu ya 💕');
+      setFormError(`Shalihah, mohon isi "${formTemplate.q3RoleLabel}" terlebih dahulu ya 💕`);
       return;
     }
     if (!cleanDomicile) {
-      setFormError('Shalihah, mohon isi "Dibumi sebelah mana kamu tinggal?" terlebih dahulu ya 🌏🌱');
+      setFormError(`Shalihah, mohon isi "${formTemplate.q4DomicileLabel}" terlebih dahulu ya 🌏🌱`);
       return;
     }
     if (!followedHealYou) {
-      setFormError('Mohon konfirmasi sudah follow @Healyou.official dulu ya, Shalihah 🤩');
+      setFormError(`Mohon pilih jawaban pada "${formTemplate.q6FollowLabel}" dulu ya, Shalihah 🤩`);
       return;
     }
     if (!resolvedHealingTarget) {
-      setFormError(
-        'Mohon pilih atau tuliskan "Luka apa yang kamu harap bisa sembuh dalam dirimu?" ya 🖤'
-      );
+      setFormError(`Mohon pilih atau tuliskan "${formTemplate.q7WoundLabel}" ya 🖤`);
       return;
     }
-    if (!transferFileName) {
-      setFormError('Mohon unggah file "Bukti Transfer (Early bird 2 Rp.179k)" terlebih dahulu ya 🌷');
+    if (formTemplate.q9TransferEnabled && !transferFileName) {
+      setFormError(`Mohon unggah file "${formTemplate.q9TransferLabel}" terlebih dahulu ya 🌷`);
       return;
     }
     if (!commitmentStatement) {
-      setFormError('Mohon pilih pernyataan kesiapan mengikuti Muslimah Healing Day di bagian akhir form ya 🌸');
+      setFormError('Mohon pilih pernyataan kesiapan di bagian akhir formulir ya 🌸');
       return;
     }
+
+    const requiresAdminApproval =
+      formTemplate.q9TransferEnabled && formTemplate.paymentAccessCodeRequired;
 
     const existingMatch = participants.find(
       (p) =>
@@ -744,6 +895,10 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
     let savedParticipant: Participant;
 
     if (existingMatch) {
+      const keepApproved = Boolean(
+        existingMatch.paymentVerified &&
+          isParticipantPaymentVerified(activeWorkshopId, cleanPhone, existingMatch.id)
+      );
       const updated = updateParticipant(
         existingMatch.id,
         {
@@ -751,6 +906,9 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
           phone: cleanPhone,
           role: cleanFavoriteActivity || 'Peserta Workshop',
           institution: cleanDomicile,
+          paymentProofUrl: transferPreviewDataUrl || existingMatch.paymentProofUrl,
+          paymentFileName: transferFileName || existingMatch.paymentFileName,
+          paymentVerified: requiresAdminApproval ? keepApproved : true,
         },
         { allowSelfUpdate: true }
       );
@@ -760,7 +918,17 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
         phone: cleanPhone,
         role: cleanFavoriteActivity || 'Peserta Workshop',
         institution: cleanDomicile,
+        paymentProofUrl: transferPreviewDataUrl || existingMatch.paymentProofUrl,
+        paymentFileName: transferFileName || existingMatch.paymentFileName,
+        paymentVerified: requiresAdminApproval ? keepApproved : true,
       };
+      saveParticipantTransferSubmission(activeWorkshopId, {
+        participantId: savedParticipant.id,
+        phone: cleanPhone,
+        proofDataUrl: transferPreviewDataUrl || existingMatch.paymentProofUrl,
+        proofFileName: transferFileName || existingMatch.paymentFileName,
+        keepVerifiedIfAlreadyApproved: true,
+      });
       setJustUpdatedData(true);
       setEditingParticipantId(null);
     } else {
@@ -771,6 +939,10 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
           institution: cleanDomicile,
           role: cleanFavoriteActivity || 'Peserta Workshop',
           phone: cleanPhone,
+          paymentVerified: !requiresAdminApproval,
+          paymentProofUrl: transferPreviewDataUrl,
+          paymentFileName: transferFileName,
+          paymentSubmittedAt: new Date().toISOString(),
         },
         { allowSelfRegister: true }
       );
@@ -802,6 +974,16 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
       // Ignore
     }
 
+    if (!requiresAdminApproval) {
+      markParticipantPaymentVerified(
+        activeWorkshopId,
+        cleanPhone,
+        savedParticipant.id,
+        'AUTO',
+        'Otomatis'
+      );
+    }
+
     playScanBeep('success');
     setRegisteredParticipant(savedParticipant);
     setVerifiedParticipant(savedParticipant);
@@ -822,13 +1004,164 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
     setFullName('');
     setEmail('');
     setPhone('');
-    setInstitution('');
+    setDomicile('');
     setRole('');
     setHopeOrPrayer('');
+    setViewModeAfterReg('card');
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const isRegisteredCardUnlocked =
+    !formTemplate.q9TransferEnabled ||
+    !formTemplate.paymentAccessCodeRequired ||
+    Boolean(
+      registeredParticipant &&
+        (registeredParticipant.status === 'PRESENT' ||
+          registeredParticipant.status === 'LATE' ||
+          registeredParticipant.paymentVerified === true ||
+          isParticipantPaymentVerified(
+            activeWorkshopId,
+            registeredParticipant.phone,
+            registeredParticipant.id
+          ))
+    );
+  // Reference paymentVerifyTick so React re-evaluates unlock state immediately
+  void paymentVerifyTick;
+
+  const handleReuploadTransferProof = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !registeredParticipant) return;
+    if (file.size > 10 * 1024 * 1024) return;
+    const preview = await compressTransferProofForLocal(file);
+    saveParticipantTransferSubmission(activeWorkshopId, {
+      participantId: registeredParticipant.id,
+      phone: registeredParticipant.phone,
+      proofDataUrl: preview,
+      proofFileName: file.name,
+      keepVerifiedIfAlreadyApproved: true,
+    });
+    const updated = updateParticipant(
+      registeredParticipant.id,
+      {
+        paymentProofUrl: preview,
+        paymentFileName: file.name,
+      },
+      { allowSelfUpdate: true }
+    );
+    if (updated) {
+      setRegisteredParticipant(updated);
+    }
+    if (savedFormDetails) {
+      const nextForm = {
+        ...savedFormDetails,
+        transferFileName: file.name,
+        transferPreviewDataUrl: preview,
+      };
+      setSavedFormDetails(nextForm);
+      try {
+        localStorage.setItem(localFormDetailsKey, JSON.stringify(nextForm));
+      } catch {
+        // Ignore
+      }
+    }
+    setReuploadSuccessNotice(true);
+    window.setTimeout(() => setReuploadSuccessNotice(false), 3000);
+    setPaymentVerifyTick((t) => t + 1);
+  };
+
+  const handleLookupRegistrationStatus = (e: React.FormEvent) => {
+    e.preventDefault();
+    setLookupStatusMessage(null);
+    const q = lookupStatusInput.trim();
+    if (!q) return;
+    const normQPhone = normalizePhoneForPaymentCode(q);
+    const found = participants.find(
+      (p) =>
+        p.id.toUpperCase() === q.toUpperCase() ||
+        (normQPhone.length >= 6 &&
+          normalizePhoneForPaymentCode(p.phone || '') === normQPhone) ||
+        p.name.toLowerCase() === q.toLowerCase()
+    );
+    if (!found) {
+      setLookupStatusMessage(
+        'Data pendaftaran tidak ditemukan. Pastikan memasukkan Nomor WhatsApp atau ID Peserta (HY-XXX) yang digunakan saat mendaftar.'
+      );
+      return;
+    }
+    setRegisteredParticipant(found);
+    setVerifiedParticipant(found);
+    try {
+      localStorage.setItem(localSelfRegKey, found.id);
+    } catch {
+      // Ignore
+    }
+    setLookupStatusInput('');
+    setViewModeAfterReg('card');
+  };
+
+  const adminWaDisplay =
+    formTemplate.adminConfirmationWhatsapp &&
+    formTemplate.adminConfirmationWhatsapp !== '081234567890'
+      ? formTemplate.adminConfirmationWhatsapp
+      : '085772904491';
+
+  const buildRequestAdminApprovalWhatsAppUrl = (params: {
+    name: string;
+    phone: string;
+    role: string;
+    domicile: string;
+    transferFile: string;
+    participantId?: string;
+  }) => {
+    const normAdmin = normalizePhoneForPaymentCode(adminWaDisplay);
+    const waAdminTarget = normAdmin ? `62${normAdmin}` : '6285772904491';
+    const lines = [
+      `Assalamu'alaikum Admin / Panitia *${activeConfig.organizer || 'Heal You'}* 🌸`,
+      '',
+      `Saya telah mengisi formulir pendaftaran dan mengunggah bukti transfer untuk acara *${formTemplate.invitationTitle || activeConfig.name}*. Mohon bantuannya untuk *Verifikasi / Approval (ACC)* pembayaran saya agar *Kartu Pengenal (Barcode QR)* saya aktif:`,
+      '',
+      params.participantId ? `• *ID Pendaftaran:* ${params.participantId}` : null,
+      `• *Nama Peserta:* ${params.name || '-'}`,
+      `• *No. WhatsApp:* ${params.phone || '-'}`,
+      `• *Pekerjaan / Kegiatan:* ${params.role || '-'}`,
+      `• *Tempat Tinggal / Domisili:* ${params.domicile || '-'}`,
+      `• *Bukti Transfer:* ${params.transferFile || 'Sudah diunggah di formulir pendaftaran'}`,
+      '',
+      'Terima kasih banyak! 💕',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    return `https://wa.me/${waAdminTarget}?text=${encodeURIComponent(lines)}`;
+  };
+
+  const buildSendApprovedCardLinkToParticipantWaUrl = (p: Participant) => {
+    const cleanPhone = normalizePhoneForPaymentCode(p.phone || '');
+    const waTarget = cleanPhone ? `62${cleanPhone}` : '';
+    const basePortal = buildParticipantPortalUrl(activeWorkshopId, activeConfig, 'register');
+    const accSig = computeApprovalSignature(p.id, activeWorkshopId);
+    const sep = basePortal.includes('?') ? '&' : '?';
+    const approvedUrl = `${basePortal}${sep}pid=${encodeURIComponent(p.id)}&name=${encodeURIComponent(p.name)}&phone=${encodeURIComponent(p.phone || '')}&dom=${encodeURIComponent(p.institution || '')}&role=${encodeURIComponent(p.role || '')}&acc=${encodeURIComponent(accSig)}`;
+
+    const msg = [
+      `Assalamu'alaikum Kak *${p.name}* 🌸`,
+      `Alhamdulillah, pembayaran registrasi *${formTemplate.invitationTitle || activeConfig.name}* Anda (ID: *${p.id}*) telah *DIVERIFIKASI / DI-ACC* oleh Admin & Panitia.`,
+      '',
+      `✅ *Kartu Pengenal (Barcode QR)* resmi Anda kini sudah aktif dan dapat langsung dibuka serta diunduh melalui tautan berikut:`,
+      approvedUrl,
+      '',
+      `Sampai jumpa di lokasi acara ya! 💕`,
+    ].join('\n');
+
+    return waTarget
+      ? `https://wa.me/${waTarget}?text=${encodeURIComponent(msg)}`
+      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
   };
 
   const handleDownloadRegisteredCard = async () => {
-    if (!registeredParticipant) return;
+    if (!registeredParticipant || !isRegisteredCardUnlocked) return;
     try {
       const qrEl = document.getElementById(
         `portal-reg-qr-${registeredParticipant.id}`
@@ -915,7 +1248,11 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
   const handleCopyPortalUrl = async (targetTab: 'register' | 'certificate') => {
     const url = buildParticipantPortalUrl(activeWorkshopId, activeConfig, targetTab);
     try {
-      await navigator.clipboard.writeText(url);
+      const linkTitle =
+        targetTab === 'register'
+          ? formTemplate.shareLinkSlug || 'HealYou-Pendaftaran'
+          : `${formTemplate.shareLinkSlug || 'HealYou-Pendaftaran'}-Sertifikat`;
+      await copyPortalLinkWithTitle(url, linkTitle);
       setCopiedPortalLink(targetTab);
       window.setTimeout(() => setCopiedPortalLink(null), 2500);
     } catch {
@@ -949,14 +1286,44 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
     'register'
   );
 
+  // Real-time Participant Capacity (Kuota Peserta) & Verified (ACC) Counter
+  const participantQuota = Math.max(
+    1,
+    formTemplate.participantQuota || activeConfig.quota || 30
+  );
+  const verifiedParticipantsCount = participants.filter(
+    (p) => p.paymentVerified === true
+  ).length;
+  const unverifiedParticipantsCount = participants.filter(
+    (p) => p.paymentVerified === false
+  ).length;
+  const remainingQuota = Math.max(0, participantQuota - verifiedParticipantsCount);
+  const quotaFilledPercentage = Math.min(
+    100,
+    Math.round((verifiedParticipantsCount / Math.max(participantQuota, 1)) * 100)
+  );
+  const isQuotaLow = remainingQuota > 0 && remainingQuota <= 5;
+  const isQuotaFull = remainingQuota === 0;
+
+  const handleSaveQuotaInline = (targetQuota?: number) => {
+    const parsed =
+      typeof targetQuota === 'number'
+        ? targetQuota
+        : parseInt(quotaInputDraft.trim(), 10);
+    const safeQuota =
+      Number.isFinite(parsed) && parsed >= 1 ? Math.min(5000, Math.round(parsed)) : 30;
+    const updatedTemplate = saveRegistrationTemplate(activeWorkshopId, {
+      ...formTemplate,
+      participantQuota: safeQuota,
+    });
+    setFormTemplate(updatedTemplate);
+    updateConfig({ quota: safeQuota });
+    setQuotaInputDraft(String(safeQuota));
+    setIsEditingQuotaInline(false);
+  };
+
   return (
-    <div
-      className="min-h-screen flex flex-col font-sans text-slate-900"
-      style={{
-        background:
-          'linear-gradient(155deg, #fdf8ff 0%, #f5eeff 38%, #eef4ff 75%, #f8f5ff 100%)',
-      }}
-    >
+    <div className="min-h-screen flex flex-col font-sans text-slate-900 bg-[#FAF9F6] selection:bg-purple-900 selection:text-white">
       {/* Hidden Signed QR Canvases for instant participant card & E-Certificate rendering */}
       <div className="hidden" aria-hidden="true">
         {registeredParticipant && (
@@ -1014,65 +1381,81 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
         <div id={fileScannerId} />
       </div>
 
-      {/* Optional Admin Preview Control Bar (ONLY shown when Admin clicks preview inside Admin Panel) */}
-      {isAdminPreview && !hideAdminBanner && (
-        <div className="bg-slate-900 text-white border-b border-slate-800 px-4 py-2.5 sticky top-0 z-50 shadow-md">
-          <div className="max-w-4xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      {/* Single Unified Admin & Panitia Control Bar */}
+      {(isAdminPreview || canManageParticipants || canVerifyPayment) && !hideAdminBanner && (
+        <div className="bg-slate-900 text-white border-b border-slate-800 px-4 sm:px-6 lg:px-10 py-2.5 sticky top-0 z-50 shadow-xs">
+          <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2.5">
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-400/20 text-amber-300 border border-amber-400/30">
-                Mode Pratinjau Admin
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                {canManageParticipants ? 'Mode Admin' : 'Mode Panitia'}
               </span>
-              <p className="text-xs text-slate-300">
-                Saat peserta membuka <strong>Link Khusus Peserta</strong>, mereka{' '}
-                <span className="text-white font-semibold underline decoration-emerald-400">
-                  hanya dapat mengakses halaman ini saja
-                </span>{' '}
-                (tanpa akses ke Dashboard Panitia).
-              </p>
+              <span className="text-xs text-slate-300 hidden sm:inline">
+                Sistem Verifikasi Pembayaran (ACC) &amp; Pratinjau Portal Peserta
+              </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowAdminApprovalModal(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>
+                  Verifikasi Pembayaran (
+                  {participants.filter((p) => p.paymentVerified === false).length} Menunggu)
+                </span>
+              </button>
+              {canManageParticipants && (
+                <button
+                  type="button"
+                  onClick={() => setIsFormEditorOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-pink-600 hover:bg-pink-500 text-white transition-colors cursor-pointer"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  <span>Edit Formulir</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => handleCopyPortalUrl('register')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white transition-all cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white transition-colors cursor-pointer"
               >
                 {copiedPortalLink === 'register' ? (
                   <>
                     <Check className="w-3.5 h-3.5" />
-                    Link Disalin!
+                    <span>Tersalin!</span>
                   </>
                 ) : (
                   <>
                     <Copy className="w-3.5 h-3.5" />
-                    Salin Link Pendaftaran
+                    <span>Salin Link</span>
                   </>
                 )}
               </button>
               <button
                 type="button"
                 onClick={() => setShowShareQrModal(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-all cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors cursor-pointer"
               >
                 <QrCode className="w-3.5 h-3.5 text-purple-300" />
-                QR Link
+                <span>QR</span>
               </button>
               <button
                 type="button"
                 onClick={() => setHideAdminBanner(true)}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all cursor-pointer"
-                title="Sembunyikan bar ini untuk melihat tampilan 100% peserta"
+                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors cursor-pointer"
+                title="Sembunyikan bar ini untuk melihat tampilan murni peserta"
               >
                 <EyeOff className="w-3.5 h-3.5" />
-                Layar Murni
               </button>
               {onExitAdminPreview && (
                 <button
                   type="button"
                   onClick={onExitAdminPreview}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-900 hover:bg-slate-100 transition-all cursor-pointer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-white text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
-                  Kembali ke Admin
+                  <span>Admin</span>
                 </button>
               )}
             </div>
@@ -1080,8 +1463,8 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
         </div>
       )}
 
-      {/* Floating button to restore admin bar if hidden during Admin Preview */}
-      {isAdminPreview && hideAdminBanner && (
+      {/* Floating button to restore admin bar if hidden */}
+      {(isAdminPreview || canManageParticipants) && hideAdminBanner && (
         <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2">
           <button
             type="button"
@@ -1089,7 +1472,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold bg-slate-900/90 text-white shadow-lg hover:bg-slate-900 backdrop-blur-xs cursor-pointer"
           >
             <Eye className="w-3.5 h-3.5 text-purple-300" />
-            Tampilkan Bar Admin
+            <span>Bar Admin</span>
           </button>
           {onExitAdminPreview && (
             <button
@@ -1098,852 +1481,1677 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold bg-purple-700 text-white shadow-lg hover:bg-purple-800 cursor-pointer"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              Panel Admin
+              <span>Panel Admin</span>
             </button>
           )}
         </div>
       )}
 
-      {/* Main Participant Portal Content */}
-      <main className="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10 flex flex-col gap-6">
-        {/* Couture Workshop Event Header Card */}
-        <div
-          className="relative rounded-3xl p-6 sm:p-8 border border-white shadow-sm overflow-hidden"
-          style={{
-            background:
-              'linear-gradient(135deg, rgba(242,203,252,0.55) 0%, rgba(213,196,252,0.5) 45%, rgba(184,208,255,0.55) 100%)',
-          }}
-        >
-          <div className="relative z-10 flex flex-col items-center text-center">
-            <div className="w-16 h-16 rounded-tl-[20px] rounded-br-[20px] rounded-tr-[4px] rounded-bl-[4px] bg-white/90 p-1.5 shadow-sm border border-purple-100 mb-3">
+      {/* Full-Width Executive Top Navigation Header */}
+      <header className="bg-white/95 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-40">
+        <div className="max-w-[1440px] w-full mx-auto px-4 sm:px-6 lg:px-10 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-11 h-11 rounded-tl-xl rounded-br-xl rounded-tr-xs rounded-bl-xs bg-[#FAF9F6] p-1 border border-slate-200/90 shrink-0 shadow-2xs">
               <HealYouLogo
-                className="w-full h-full rounded-tl-[16px] rounded-br-[16px] rounded-tr-[3px] rounded-bl-[3px]"
+                className="w-full h-full rounded-tl-[10px] rounded-br-[10px] rounded-tr-[2px] rounded-bl-[2px]"
                 customLogoUrl={activeConfig.customLogoUrl}
               />
             </div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-[#3d2863]">
-              {activeConfig.organizer || 'Muslimah Healing Journey'}
-            </p>
-            <p className="font-serif italic text-sm font-semibold text-[#5e438f] mt-0.5">
-              — {activeConfig.tagline || "Let's Heal"} —
-            </p>
-
-            <div className="mt-4 inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-white/80 border border-purple-200/70 text-[11px] font-semibold text-purple-900 shadow-2xs">
-              <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-              Portal Resmi Peserta · {activeConfig.eventLabel || 'Agenda Workshop Psikologi'}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-bold tracking-tight text-slate-900">
+                  {activeConfig.organizer || 'Muslimah Healing Journey'}
+                </span>
+                <span className="text-slate-300 hidden md:inline" aria-hidden="true">
+                  ·
+                </span>
+                <span
+                  className="text-sm italic font-semibold text-purple-900"
+                  style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
+                >
+                  {activeConfig.tagline || "Let's Heal"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-slate-500 truncate mt-0.5">
+                <span>Portal Resmi Registrasi &amp; E-Sertifikat</span>
+                {formTemplate.dateDisplay && (
+                  <>
+                    <span aria-hidden="true" className="hidden lg:inline">
+                      ·
+                    </span>
+                    <span className="hidden lg:inline text-slate-600 font-medium truncate">
+                      {formTemplate.dateDisplay}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
+          </div>
 
-            <h1 className="font-serif text-2xl sm:text-3xl font-bold text-[#1f1235] mt-3 max-w-2xl leading-snug">
-              {activeConfig.name}
-            </h1>
+          {/* Right Controls: Active Participant Toggle + Segmented Switcher */}
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {registeredParticipant && portalTab === 'register' && (
+              <div className="hidden xl:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#FAF9F6] border border-slate-200/80 text-xs">
+                <span
+                  className={cn(
+                    'w-2 h-2 rounded-full shrink-0',
+                    isRegisteredCardUnlocked ? 'bg-emerald-500' : 'bg-amber-500'
+                  )}
+                />
+                <span className="text-slate-600">
+                  Peserta: <strong className="text-slate-900">{registeredParticipant.name}</strong>
+                </span>
+                <span className="font-mono font-semibold text-purple-900">
+                  ({registeredParticipant.id})
+                </span>
+              </div>
+            )}
 
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-xs sm:text-sm text-[#4a3b69] font-medium">
-              <span className="inline-flex items-center gap-1.5 bg-white/80 px-3.5 py-1.5 rounded-xl border border-white shadow-2xs">
-                <Calendar className="w-4 h-4 text-purple-700" />
-                {formatSafeDateStr(activeConfig.date, 'dd MMMM yyyy')} · Pukul{' '}
-                {formatSafeTimeStr(activeConfig.startTime)} WIB
-              </span>
-              <span className="inline-flex items-center gap-1.5 bg-white/80 px-3.5 py-1.5 rounded-xl border border-white shadow-2xs">
-                <MapPin className="w-4 h-4 text-purple-700" />
-                {activeConfig.location}
-              </span>
+            <div className="bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 grid grid-cols-2 gap-1 shrink-0 w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={() => setPortalTab('register')}
+                className={cn(
+                  'px-4 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer',
+                  portalTab === 'register'
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                )}
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>01. Pendaftaran &amp; Kartu</span>
+                {registeredParticipant && (
+                  <span
+                    className={cn(
+                      'px-1.5 py-0.2 rounded text-[10px] font-mono',
+                      portalTab === 'register'
+                        ? 'bg-emerald-400/20 text-emerald-200'
+                        : 'bg-emerald-100 text-emerald-800'
+                    )}
+                  >
+                    {registeredParticipant.id}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPortalTab('certificate')}
+                className={cn(
+                  'px-4 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer',
+                  portalTab === 'certificate'
+                    ? 'bg-emerald-900 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                )}
+              >
+                <Award className="w-3.5 h-3.5" />
+                <span>02. Klaim E-Sertifikat</span>
+              </button>
             </div>
           </div>
         </div>
+      </header>
 
-        {/* Two-Mode Switcher for Participant: 1. Formulir Pendaftaran | 2. Scan Kartu & Klaim E-Sertifikat */}
-        <div className="bg-white/90 backdrop-blur-md rounded-2xl p-2 border border-purple-100 shadow-xs grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => setPortalTab('register')}
-            className={cn(
-              'flex items-center gap-3 px-4 py-3.5 rounded-xl text-left transition-all cursor-pointer',
-              portalTab === 'register'
-                ? 'text-purple-950 shadow-xs border border-purple-200/80'
-                : 'text-slate-600 hover:bg-purple-50/50'
-            )}
-            style={
-              portalTab === 'register'
-                ? {
-                    background:
-                      'linear-gradient(115deg, rgba(240,189,251,0.42) 0%, rgba(201,179,252,0.42) 50%, rgba(137,180,255,0.42) 100%)',
-                  }
-                : undefined
-            }
-          >
-            <div
-              className={cn(
-                'w-10 h-10 rounded-xl flex items-center justify-center shrink-0',
-                portalTab === 'register'
-                  ? 'bg-purple-900 text-white shadow-xs'
-                  : 'bg-purple-50 text-purple-600'
-              )}
-            >
-              <UserPlus className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-bold">1. Formulir Pendaftaran Peserta</span>
-                {registeredParticipant && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                    Terdaftar ({registeredParticipant.id})
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Daftar mandiri &amp; unduh Kartu Pengenal ber-Barcode QR
-              </p>
-            </div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setPortalTab('certificate');
-            }}
-            className={cn(
-              'flex items-center gap-3 px-4 py-3.5 rounded-xl text-left transition-all cursor-pointer',
-              portalTab === 'certificate'
-                ? 'bg-emerald-900 text-white shadow-xs border border-emerald-800'
-                : 'text-slate-600 hover:bg-emerald-50/60'
-            )}
-          >
-            <div
-              className={cn(
-                'w-10 h-10 rounded-xl flex items-center justify-center shrink-0',
-                portalTab === 'certificate'
-                  ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/30'
-                  : 'bg-emerald-50 text-emerald-700'
-              )}
-            >
-              <Award className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-bold">
-                  2. Upload / Scan Kartu &amp; Klaim Sertifikat
-                </span>
-              </div>
-              <p
-                className={cn(
-                  'text-xs mt-0.5',
-                  portalTab === 'certificate' ? 'text-emerald-100/90' : 'text-slate-500'
-                )}
-              >
-                Upload Kartu Pengenal / Barcode untuk evaluasi &amp; E-Sertifikat
-              </p>
-            </div>
-          </button>
-        </div>
-
-        {/* TAB 1: FORMULIR PENDAFTARAN MANDIRI PESERTA ("Muslimah Healing Day! 🌷" Format) */}
+      {/* Main Participant Portal Content — Widescreen 1440px Architectural Container */}
+      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 lg:px-10 py-6 lg:py-8 flex flex-col gap-6">
+        {/* TAB 1: WIDESCREEN REGISTRATION & CARD VIEW */}
         {portalTab === 'register' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            <div className="lg:col-span-7 space-y-4">
-              {/* Card 0: Undangan & Deskripsi Acara "Muslimah Healing Day! 🌷" */}
-              <div className="bg-white rounded-3xl border border-pink-200/80 shadow-xs overflow-hidden">
-                <div
-                  className="h-3 w-full"
-                  style={{
-                    background:
-                      'linear-gradient(90deg, #f4a5d0 0%, #c9b3fc 50%, #9ec2ff 100%)',
-                  }}
-                />
-                <div className="p-6 sm:p-7 space-y-4 text-slate-800 text-sm leading-relaxed">
-                  <h2
-                    className="text-3xl sm:text-4xl font-bold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap"
-                    style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
+          <div className="space-y-6">
+            {/* Quick Toggle Banner when participant already registered */}
+            {registeredParticipant && (
+              <div className="bg-white rounded-2xl border border-slate-200/90 p-3.5 px-5 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+                <div className="flex items-center gap-2.5 text-xs sm:text-sm">
+                  <span
+                    className={cn(
+                      'w-2.5 h-2.5 rounded-full shrink-0',
+                      isRegisteredCardUnlocked ? 'bg-emerald-500' : 'bg-amber-500'
+                    )}
+                  />
+                  <span className="text-slate-700">
+                    Status Pendaftaran:{' '}
+                    <strong className="text-slate-900">{registeredParticipant.name}</strong> (
+                    <span className="font-mono font-semibold text-purple-900">
+                      {registeredParticipant.id}
+                    </span>
+                    ) ·{' '}
+                    <span
+                      className={cn(
+                        'font-semibold',
+                        isRegisteredCardUnlocked ? 'text-emerald-700' : 'text-amber-700'
+                      )}
+                    >
+                      {isRegisteredCardUnlocked
+                        ? 'Pembayaran Terverifikasi (Kartu QR Aktif)'
+                        : 'Menunggu Verifikasi / ACC Admin & Panitia'}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingParticipantId(null);
+                      setViewModeAfterReg('card');
+                    }}
+                    className={cn(
+                      'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer',
+                      viewModeAfterReg === 'card' && !editingParticipantId
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    )}
                   >
-                    <span className="italic">Muslimah Healing Day!</span>
-                    <span>🌷</span>
-                  </h2>
-
-                  <p className="font-medium text-slate-800">
-                    Assalamu&apos;alaikum, Shalihah! 💕
-                  </p>
-
-                  <p className="text-slate-700">
-                    Pernah merasa lelah dan butuh me-time yang menenangkan?
-                  </p>
-
-                  <p className="text-slate-700">
-                    Yuk, luangkan waktu untuk diri sendiri di Hari Kesehatan Mental Sedunia dalam{' '}
-                    <strong>&quot;Muslimah Healing Day!&quot;</strong> workshop merangkai bunga +
-                    self healing yang insyaAllah will soothe your heart and refresh your soul 💐✨
-                  </p>
-
-                  <div className="p-4 rounded-2xl bg-pink-50/55 border border-pink-100/90 space-y-1.5 text-slate-800">
-                    <p className="font-bold text-slate-900">Save the date:</p>
-                    <p>🗓️ Sabtu, 10 Oktober 2026</p>
-                    <p>⏰ 13.00 – Selesai</p>
-                    <p>📍 J Chicken Tole, Depok</p>
-                    <p>👗 Dresscode: Soft pink / Cream / White</p>
-                  </div>
-
-                  <div className="p-4 rounded-2xl bg-purple-50/50 border border-purple-100/80 space-y-1.5 text-slate-800">
-                    <p className="font-bold text-slate-900">Benefit yang kamu dapat:</p>
-                    <p>🍗 Lunch J Chicken</p>
-                    <p>🎁 Goodie bag dari supporter event</p>
-                    <p>💐 Bouquet Flower karya tangan sendiri</p>
-                    <p>📝 Worksheet regulasi emosi (Trigger Innerchild)</p>
-                    <p>🌷 Hadiah Games</p>
-                  </div>
-
-                  <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200/70 space-y-1">
-                    <p className="font-bold text-slate-900">💰 Investasi Healing-mu:</p>
-                    <p className="font-semibold text-purple-950">
-                      Hanya 179 untuk Early Bird 2! <span className="text-slate-500 font-normal">(Normal 229K)</span>
-                    </p>
-                  </div>
-
-                  <div className="space-y-1.5 pt-1 text-slate-700">
-                    <p className="font-medium text-slate-900">
-                      Yuk, segera isi formulirnya, Shalihah!
-                    </p>
-                    <p>
-                      Karena hati yang tenang itu priceless namun karena Intimate workshop jadi
-                      pesertanya terbatas ya shalihah 🥺💗
-                    </p>
-                    <p className="pt-1 font-medium text-slate-900">
-                      Sampai bertemu di acara yang penuh keberkahan ini, ya! 😊🌸
-                    </p>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-100 text-xs text-rose-600 font-medium">
-                    * Menunjukkan pertanyaan yang wajib diisi
-                  </div>
+                    Status &amp; Kartu QR Saya
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewModeAfterReg('form')}
+                    className={cn(
+                      'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer',
+                      viewModeAfterReg === 'form' || Boolean(editingParticipantId)
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    )}
+                  >
+                    {editingParticipantId ? 'Sedang Edit Data' : 'Lihat Undangan & Formulir'}
+                  </button>
                 </div>
               </div>
+            )}
 
-              <form onSubmit={handleRegisterSubmit} className="space-y-4">
-                {formError && (
-                  <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 flex items-start gap-2.5 text-xs text-rose-800 shadow-2xs">
-                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                    <span className="font-medium">{formError}</span>
-                  </div>
-                )}
+            {/* VIEW A: WIDESCREEN 12-COLUMN SPLIT — INVITATION DOSSIER (LEFT) + REGISTRATION FORM (RIGHT) */}
+            {(!registeredParticipant || viewModeAfterReg === 'form' || Boolean(editingParticipantId)) && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-8 items-start">
+                {/* LEFT COLUMN (lg:col-span-5): STICKY EDITORIAL EVENT DOSSIER & RETURNING PARTICIPANT STATUS CHECK */}
+                <div className="lg:col-span-5 lg:sticky lg:top-24 space-y-5">
+                  {!editingParticipantId && (
+                    <section className="bg-white rounded-3xl border border-slate-200/90 shadow-2xs overflow-hidden">
+                      {/* Regal Plum Editorial Header */}
+                      <div
+                        className="p-6 sm:p-7 text-white space-y-3"
+                        style={{
+                          background:
+                            'linear-gradient(145deg, #24143d 0%, #3b2363 55%, #2b1847 100%)',
+                        }}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-purple-200/90">
+                          <span>
+                            Undangan Terbuka · {formTemplate.shareLinkSlug || 'HealYou-Pendaftaran'}
+                          </span>
+                          {formTemplate.greetingText && (
+                            <span className="text-amber-200 font-medium">
+                              {formTemplate.greetingText}
+                            </span>
+                          )}
+                        </div>
 
-                {duplicateParticipant && (
-                  <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 space-y-3 shadow-2xs">
-                    <div className="flex items-start gap-2.5">
-                      <CheckCircle2 className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
-                      <div>
-                        <h4 className="text-xs font-bold text-amber-950 uppercase tracking-wider">
-                          Nomor WhatsApp Sudah Terdaftar, Shalihah! 💕
-                        </h4>
-                        <p className="text-xs text-amber-900 mt-1">
-                          Kamu sudah terdaftar pada acara ini. Untuk melihat Kartu Pengenal atau
-                          klaim E-Sertifikat, silakan gunakan{' '}
-                          <strong>Kartu Pengenal Pendaftaran / Barcode QR</strong> pada menu{' '}
-                          <strong>2. Upload / Scan Kartu &amp; Klaim Sertifikat</strong>.
-                        </p>
+                        <h2
+                          className="text-2xl sm:text-3xl xl:text-[34px] font-bold text-white tracking-tight leading-tight"
+                          style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
+                        >
+                          {formTemplate.invitationTitle}
+                        </h2>
+
+                        {formTemplate.introParagraph1 && (
+                          <p className="text-xs sm:text-sm text-purple-100/95 leading-relaxed font-medium pt-0.5">
+                            {formTemplate.introParagraph1}
+                          </p>
+                        )}
                       </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
+
+                      <div className="p-6 sm:p-7 space-y-6">
+                        {formTemplate.introParagraph2 && (
+                          <p className="text-xs sm:text-sm text-slate-600 leading-relaxed whitespace-pre-line">
+                            {formTemplate.introParagraph2}
+                          </p>
+                        )}
+
+                        {/* Architectural 2x2 "Save the Date" Information Matrix */}
+                        <div className="space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-900">
+                              {formTemplate.saveTheDateTitle || 'Save the date:'}
+                            </span>
+                            <span className="text-[11px] text-slate-400">
+                              Jadwal &amp; Ketentuan
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 rounded-2xl border border-slate-200/80 bg-[#FAF9F6] divide-y sm:divide-y-0 sm:divide-x divide-slate-200/70 overflow-hidden">
+                            <div className="p-4 space-y-2.5">
+                              {formTemplate.dateDisplay && (
+                                <div>
+                                  <span className="block text-[11px] font-medium text-slate-400">
+                                    Hari &amp; Tanggal
+                                  </span>
+                                  <p className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5">
+                                    {formTemplate.dateDisplay}
+                                  </p>
+                                </div>
+                              )}
+                              {formTemplate.timeDisplay && (
+                                <div className="pt-2 border-t border-slate-200/60">
+                                  <span className="block text-[11px] font-medium text-slate-400">
+                                    Waktu Pelaksanaan
+                                  </span>
+                                  <p className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5">
+                                    {formTemplate.timeDisplay}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="p-4 space-y-2.5">
+                              {formTemplate.locationDisplay && (
+                                <div>
+                                  <span className="block text-[11px] font-medium text-slate-400">
+                                    Lokasi Tempat Acara
+                                  </span>
+                                  <p className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5">
+                                    {formTemplate.locationDisplay}
+                                  </p>
+                                </div>
+                              )}
+                              {formTemplate.dresscodeDisplay && (
+                                <div className="pt-2 border-t border-slate-200/60">
+                                  <span className="block text-[11px] font-medium text-slate-400">
+                                    Nuansa Busana (Dresscode)
+                                  </span>
+                                  <p className="text-xs sm:text-sm font-semibold text-slate-900 mt-0.5">
+                                    {formTemplate.dresscodeDisplay}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Curated Benefit Bento Grid */}
+                        {formTemplate.benefitItems.length > 0 && (
+                          <div className="space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-900">
+                                {formTemplate.benefitTitle || 'Benefit yang kamu dapat:'}
+                              </span>
+                              <span className="text-[11px] text-slate-400 font-mono tabular-nums">
+                                {formTemplate.benefitItems.length} Fasilitas Peserta
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {formTemplate.benefitItems.map((benefit, idx) => (
+                                <div
+                                  key={idx}
+                                  className="px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-slate-200/70 flex items-center gap-2.5 text-xs font-medium text-slate-800"
+                                >
+                                  <span className="text-[10px] font-mono font-semibold text-purple-800 tabular-nums shrink-0">
+                                    {String(idx + 1).padStart(2, '0')}
+                                  </span>
+                                  <span className="leading-snug">{benefit}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Minimalist Editorial Quote Footer */}
+                        {(formTemplate.closingCallout || formTemplate.closingQuote) && (
+                          <div className="pt-4 border-t border-slate-100 flex flex-col gap-1.5">
+                            {formTemplate.closingCallout && (
+                              <p className="text-xs sm:text-sm font-medium text-slate-800">
+                                {formTemplate.closingCallout}
+                              </p>
+                            )}
+                            {formTemplate.closingQuote && (
+                              <blockquote
+                                className="border-l-2 border-purple-800 pl-3.5 text-base sm:text-lg italic font-semibold text-purple-950 mt-1"
+                                style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
+                              >
+                                {formTemplate.closingQuote}
+                              </blockquote>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  )}
+
+                  {/* Quick Returning Participant Status Lookup Card (Always accessible on Left Column) */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-5 sm:p-6 shadow-2xs space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0" />
+                        <span>Sudah Mendaftar? Cek Status ACC &amp; Kartu QR</span>
+                      </span>
                       <button
                         type="button"
-                        onClick={() => {
-                          setDuplicateParticipant(null);
-                          setPortalTab('certificate');
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-700 text-white hover:bg-emerald-800 transition-all cursor-pointer"
+                        onClick={() => setPortalTab('certificate')}
+                        className="text-xs font-semibold text-purple-900 hover:underline inline-flex items-center gap-1 cursor-pointer"
                       >
-                        <Upload className="w-3.5 h-3.5" />
-                        Menuju Upload Kartu Pengenal / Barcode
+                        <span>Klaim Sertifikat</span>
+                        <ArrowRight className="w-3 h-3" />
                       </button>
                     </div>
-                  </div>
-                )}
-
-                {/* Q1: Siapa Nama kamu di Bumi? */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3">
-                  <label className="block text-sm sm:text-base font-medium text-slate-900">
-                    Siapa Nama kamu di Bumi? 😊💕 <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    placeholder="Jawaban Anda"
-                    className="w-full px-1 py-2.5 text-sm text-slate-900 bg-transparent border-b border-slate-300 focus:border-purple-600 focus:outline-none transition-colors placeholder:text-slate-400"
-                  />
-                  <p className="text-[11px] text-slate-400">
-                    Nama ini juga akan tercetak pada Kartu Pengenal QR &amp; E-Sertifikat kamu ya,
-                    Shalihah.
-                  </p>
-                </div>
-
-                {/* Q2: No Whatsapp kamu? */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3">
-                  <label className="block text-sm sm:text-base font-medium text-slate-900">
-                    No Whatsapp kamu? 📞 <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="tel"
-                    required
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="Jawaban Anda"
-                    className="w-full max-w-sm px-1 py-2.5 text-sm text-slate-900 bg-transparent border-b border-slate-300 focus:border-purple-600 focus:outline-none transition-colors placeholder:text-slate-400"
-                  />
-                </div>
-
-                {/* Q3: Pekerjaan / Kegiatan favorite-mu? */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3">
-                  <label className="block text-sm sm:text-base font-medium text-slate-900">
-                    Pekerjaan / Kegiatan favorite-mu? 💕 <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={role}
-                    onChange={(e) => setRole(e.target.value)}
-                    placeholder="Jawaban Anda"
-                    className="w-full px-1 py-2.5 text-sm text-slate-900 bg-transparent border-b border-slate-300 focus:border-purple-600 focus:outline-none transition-colors placeholder:text-slate-400"
-                  />
-                </div>
-
-                {/* Q4: Dibumi sebelah mana kamu tinggal? */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3">
-                  <label className="block text-sm sm:text-base font-medium text-slate-900">
-                    Dibumi sebelah mana kamu tinggal? 🌏🌱 <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={institution}
-                    onChange={(e) => setInstitution(e.target.value)}
-                    placeholder="Jawaban Anda"
-                    className="w-full px-1 py-2.5 text-sm text-slate-900 bg-transparent border-b border-slate-300 focus:border-purple-600 focus:outline-none transition-colors placeholder:text-slate-400"
-                  />
-                </div>
-
-                {/* Q5: Bagaimana perasaanmu menjelang acara ini? */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3.5">
-                  <label className="block text-sm sm:text-base font-medium text-slate-900">
-                    Bagaimana perasaanmu menjelang acara ini? 🥰
-                  </label>
-                  <div className="space-y-2.5">
-                    {FEELING_OPTIONS.map((opt) => (
-                      <label
-                        key={opt}
-                        className="flex items-center gap-3 text-sm text-slate-800 cursor-pointer select-none py-0.5"
-                      >
-                        <input
-                          type="radio"
-                          name="feelingBeforeEvent"
-                          value={opt}
-                          checked={feelingBeforeEvent === opt}
-                          onChange={(e) => setFeelingBeforeEvent(e.target.value)}
-                          className="w-4 h-4 accent-purple-700 cursor-pointer"
-                        />
-                        <span>{opt}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Q6: Mari tumbuh bersama @Healyou.official, sudah follow aku? */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3">
-                  <div className="space-y-1">
-                    <label className="block text-sm sm:text-base font-medium text-slate-900">
-                      Mari tumbuh bersama @Healyou.official, sudah follow aku? 🤩{' '}
-                      <span className="text-rose-500">*</span>
-                    </label>
-                    <a
-                      href="https://www.instagram.com/healyou.official"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block text-sm font-medium text-blue-600 hover:text-blue-700 underline"
-                    >
-                      Klik untuk follow!
-                    </a>
-                  </div>
-                  <div className="pt-1">
-                    <label className="flex items-center gap-3 text-sm text-slate-800 cursor-pointer select-none py-0.5">
-                      <input
-                        type="radio"
-                        name="followedHealYou"
-                        required
-                        value="Sudah dong :)"
-                        checked={followedHealYou === 'Sudah dong :)'}
-                        onChange={(e) => setFollowedHealYou(e.target.value)}
-                        className="w-4 h-4 accent-purple-700 cursor-pointer"
-                      />
-                      <span>Sudah dong :)</span>
-                    </label>
-                  </div>
-                </div>
-
-                {/* Q7: Luka apa yang kamu harap bisa sembuh dalam dirimu? */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3.5">
-                  <div>
-                    <label className="block text-sm sm:text-base font-medium text-slate-900">
-                      Luka apa yang kamu harap bisa sembuh dalam dirimu? 🖤{' '}
-                      <span className="text-rose-500">*</span>
-                    </label>
-                    <p className="text-xs sm:text-sm italic text-slate-700 mt-0.5">
-                      (Biar bisa aku aminin hehe) 🤩
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Masukkan Nomor WhatsApp atau ID Peserta (<code className="font-mono">HY-XXX</code>)
+                      untuk melihat apakah pembayaran sudah di-ACC Admin/Panitia dan mengunduh Kartu QR:
                     </p>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {HEALING_WOUND_OPTIONS.map((opt) => (
-                      <label
-                        key={opt}
-                        className="flex items-center gap-3 text-sm text-slate-800 cursor-pointer select-none py-0.5"
-                      >
-                        <input
-                          type="radio"
-                          name="healingWoundChoice"
-                          value={opt}
-                          checked={healingWoundChoice === opt}
-                          onChange={(e) => setHealingWoundChoice(e.target.value)}
-                          className="w-4 h-4 accent-purple-700 cursor-pointer"
-                        />
-                        <span>{opt}</span>
-                      </label>
-                    ))}
-
-                    <div className="flex items-center gap-3 text-sm text-slate-800 py-0.5">
-                      <label className="flex items-center gap-3 cursor-pointer select-none shrink-0">
-                        <input
-                          type="radio"
-                          name="healingWoundChoice"
-                          value="OTHER"
-                          checked={healingWoundChoice === 'OTHER'}
-                          onChange={(e) => setHealingWoundChoice(e.target.value)}
-                          className="w-4 h-4 accent-purple-700 cursor-pointer"
-                        />
-                        <span>Yang lain:</span>
-                      </label>
+                    <form onSubmit={handleLookupRegistrationStatus} className="flex flex-col sm:flex-row gap-2">
                       <input
                         type="text"
-                        value={healingWoundOther}
-                        onFocus={() => setHealingWoundChoice('OTHER')}
+                        value={lookupStatusInput}
                         onChange={(e) => {
-                          setHealingWoundChoice('OTHER');
-                          setHealingWoundOther(e.target.value);
+                          setLookupStatusInput(e.target.value);
+                          if (lookupStatusMessage) setLookupStatusMessage(null);
                         }}
-                        placeholder="Tuliskan di sini..."
-                        className="flex-1 px-1 py-1 text-sm text-slate-900 bg-transparent border-b border-slate-300 focus:border-purple-600 focus:outline-none transition-colors"
+                        placeholder="Ketik No. WhatsApp atau ID (HY-001)"
+                        className="flex-1 px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] border border-slate-200 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-slate-900"
                       />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Q8: Harapan atau doa yang ingin kamu capai dari acara ini? (opsional) */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3">
-                  <label className="block text-sm sm:text-base font-medium text-slate-900">
-                    Harapan atau doa yang ingin kamu capai dari acara ini? 🌷🤍{' '}
-                    <span className="text-slate-500 font-normal">(opsional)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={hopeOrPrayer}
-                    onChange={(e) => setHopeOrPrayer(e.target.value)}
-                    placeholder="Jawaban Anda"
-                    className="w-full px-1 py-2.5 text-sm text-slate-900 bg-transparent border-b border-slate-300 focus:border-purple-600 focus:outline-none transition-colors placeholder:text-slate-400"
-                  />
-                </div>
-
-                {/* Q9: Bukti Transfer (Early bird 2 Rp.179k) */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3.5">
-                  <div>
-                    <label className="block text-sm sm:text-base font-medium text-slate-900">
-                      Bukti Transfer (Early bird 2 Rp.179k) 🌷{' '}
-                      <span className="text-rose-500">*</span>
-                    </label>
-                    <div className="mt-2.5 p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-3">
-                      <div className="text-xs sm:text-sm text-slate-800 space-y-0.5">
-                        <p className="font-bold text-slate-900">BSI</p>
-                        <p className="font-mono font-semibold text-purple-900">890-1562-030</p>
-                        <p className="text-slate-700">a/n MAYANK INTAMI</p>
-                      </div>
                       <button
-                        type="button"
-                        onClick={() => void handleCopyRekening()}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white hover:bg-purple-50 text-purple-900 border border-purple-200 shadow-2xs transition-all cursor-pointer shrink-0"
+                        type="submit"
+                        className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-purple-950 text-white transition-colors cursor-pointer shrink-0"
                       >
-                        {copiedRekening ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>Tersalin</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5 text-purple-700" />
-                            <span>Salin No. Rek</span>
-                          </>
-                        )}
+                        Cek Status &amp; Kartu
                       </button>
-                    </div>
+                    </form>
+                    {lookupStatusMessage && (
+                      <p className="text-[11px] font-medium text-rose-600">{lookupStatusMessage}</p>
+                    )}
                   </div>
+                </div>
 
-                  <p className="text-xs text-slate-500">
-                    Upload 1 file yang didukung. Maks 10 MB. (Tersimpan aman di perangkat Anda)
-                  </p>
+                {/* RIGHT COLUMN (lg:col-span-7): EXECUTIVE MULTI-CHAPTER REGISTRATION FORM */}
+                <form
+                  onSubmit={handleRegisterSubmit}
+                  className="lg:col-span-7 bg-white rounded-3xl border border-slate-200/90 shadow-2xs overflow-hidden divide-y divide-slate-100"
+                >
+                {/* Sticky/Top Real-Time Participant Capacity (Kuota ACC) & Conversion Trigger Bar */}
+                <div className="px-6 sm:px-8 py-5 bg-[#FAF9F6] flex flex-col gap-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                        Lembar Registrasi Peserta
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Kolom bertanda <span className="text-rose-500 font-semibold">*</span> wajib
+                        dilengkapi untuk penerbitan Kartu QR &amp; E-Sertifikat
+                      </p>
+                    </div>
 
-                  <input
-                    ref={transferInputRef}
-                    type="file"
-                    accept="image/*,.pdf"
-                    onChange={handleTransferFileChange}
-                    className="hidden"
-                  />
-
-                  <div className="flex flex-wrap items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => transferInputRef.current?.click()}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold text-blue-600 bg-white hover:bg-blue-50/70 border border-slate-300 transition-colors cursor-pointer"
-                    >
-                      <Upload className="w-4 h-4" />
-                      <span>{transferFileName ? 'Ganti file' : 'Tambahkan file'}</span>
-                    </button>
-
-                    {transferFileName && (
-                      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span className="truncate max-w-[200px] font-medium">
-                          {transferFileName}
+                    {/* Live Capacity Counter + Admin Inline Edit Button */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div
+                        className={cn(
+                          'inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-mono font-bold tabular-nums shadow-2xs',
+                          isQuotaFull
+                            ? 'bg-rose-50 border-rose-200 text-rose-900'
+                            : isQuotaLow
+                              ? 'bg-amber-50 border-amber-300 text-amber-950'
+                              : 'bg-white border-slate-200/90 text-slate-800'
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'w-2 h-2 rounded-full shrink-0',
+                            isQuotaFull
+                              ? 'bg-rose-600'
+                              : isQuotaLow
+                                ? 'bg-amber-500 animate-ping'
+                                : 'bg-emerald-500'
+                          )}
+                        />
+                        <span>
+                          {verifiedParticipantsCount}/{participantQuota} Terisi ({quotaFilledPercentage}%)
                         </span>
+                        <span
+                          className={cn(
+                            'px-2 py-0.5 rounded-md text-[10px] font-sans font-bold uppercase tracking-wider',
+                            isQuotaFull
+                              ? 'bg-rose-600 text-white'
+                              : isQuotaLow
+                                ? 'bg-amber-500 text-slate-950'
+                                : 'bg-emerald-100 text-emerald-900'
+                          )}
+                        >
+                          {isQuotaFull ? 'Penuh' : `Sisa ${remainingQuota} Kursi`}
+                        </span>
+                      </div>
+
+                      {(canManageParticipants || canVerifyPayment || isAdminPreview) && (
                         <button
                           type="button"
                           onClick={() => {
-                            setTransferFileName('');
-                            setTransferPreviewDataUrl('');
-                            if (transferInputRef.current) {
-                              transferInputRef.current.value = '';
-                            }
+                            setQuotaInputDraft(String(participantQuota));
+                            setIsEditingQuotaInline((prev) => !prev);
                           }}
-                          className="text-slate-400 hover:text-rose-600 ml-1 cursor-pointer"
-                          title="Hapus file"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-purple-900 hover:bg-purple-950 text-white transition-colors cursor-pointer shadow-2xs"
+                          title="Ubah kapasitas / kuota maksimal peserta acara ini"
                         >
-                          <X className="w-3.5 h-3.5" />
+                          <Pencil className="w-3 h-3 text-amber-300" />
+                          <span>Ubah Kuota</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Inline Admin/Panitia Quota Editor (toggled via Ubah Kuota) */}
+                  {isEditingQuotaInline &&
+                    (canManageParticipants || canVerifyPayment || isAdminPreview) && (
+                      <div className="p-3.5 rounded-2xl bg-white border border-purple-200 shadow-xs space-y-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <span className="text-xs font-bold text-purple-950 block">
+                              Atur Kapasitas / Kuota Maksimal Peserta
+                            </span>
+                            <span className="text-[11px] text-slate-500">
+                              Jumlah terisi ({verifiedParticipantsCount} peserta) dihitung otomatis
+                              secara real-time dari peserta yang sudah di-ACC.
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={1}
+                              max={5000}
+                              value={quotaInputDraft}
+                              onChange={(e) => setQuotaInputDraft(e.target.value)}
+                              className="w-20 px-2.5 py-1.5 rounded-xl border border-purple-300 text-xs font-mono font-bold text-slate-900 text-center focus:outline-none focus:border-purple-800"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveQuotaInline()}
+                              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors cursor-pointer"
+                            >
+                              Simpan
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setIsEditingQuotaInline(false)}
+                              className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-100">
+                          <span className="text-[11px] font-semibold text-slate-500 mr-1">
+                            Pilih Cepat:
+                          </span>
+                          {[5, 10, 15, 20, 25, 30, 40, 50, 100].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => handleSaveQuotaInline(preset)}
+                              className={cn(
+                                'px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer border',
+                                participantQuota === preset
+                                  ? 'bg-purple-900 text-white border-purple-900'
+                                  : 'bg-slate-50 hover:bg-purple-50 text-slate-700 border-slate-200'
+                              )}
+                            >
+                              {preset} Kursi
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                  {/* Visual Capacity Progress Bar */}
+                  <div className="w-full h-2 rounded-full bg-slate-200/90 overflow-hidden">
+                    <div
+                      className={cn(
+                        'h-full transition-all duration-500 rounded-full',
+                        isQuotaFull
+                          ? 'bg-rose-600'
+                          : isQuotaLow
+                            ? 'bg-gradient-to-r from-amber-500 via-orange-500 to-rose-600'
+                            : 'bg-gradient-to-r from-emerald-600 to-teal-500'
+                      )}
+                      style={{
+                        width: `${
+                          verifiedParticipantsCount > 0
+                            ? Math.max(quotaFilledPercentage, 6)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+
+                  {/* Dynamic Conversion / FOMO Scarcity Trigger Banner */}
+                  <div
+                    className={cn(
+                      'px-3.5 py-2.5 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 transition-all',
+                      isQuotaFull
+                        ? 'bg-rose-50/90 border-rose-200 text-rose-900'
+                        : isQuotaLow
+                          ? 'bg-gradient-to-r from-amber-50 via-orange-50/90 to-rose-50 border-amber-300 text-amber-950 shadow-2xs'
+                          : quotaFilledPercentage >= 50
+                            ? 'bg-amber-50/70 border-amber-200/90 text-amber-950'
+                            : 'bg-emerald-50/70 border-emerald-200/80 text-emerald-950'
+                    )}
+                  >
+                    <div className="flex items-center gap-2 font-medium leading-snug">
+                      <Sparkles
+                        className={cn(
+                          'w-4 h-4 shrink-0',
+                          isQuotaFull
+                            ? 'text-rose-600'
+                            : isQuotaLow
+                              ? 'text-rose-600 animate-bounce'
+                              : 'text-emerald-700'
+                        )}
+                      />
+                      {isQuotaFull ? (
+                        <span>
+                          <strong>Kuota Utama Penuh ({participantQuota}/{participantQuota} Terisi)!</strong>{' '}
+                          Segera daftar untuk mengamankan antrean prioritas jika ada kursi tambahan.
+                        </span>
+                      ) : isQuotaLow ? (
+                        <span>
+                          <strong className="text-rose-700 uppercase tracking-wide">
+                            🔥 Kuota Hampir Habis! Tinggal {remainingQuota} Kursi Tersisa —
+                          </strong>{' '}
+                          <strong className="underline decoration-rose-400 underline-offset-2">
+                            Segera daftar sekarang sebelum kuota habis!
+                          </strong>
+                        </span>
+                      ) : quotaFilledPercentage >= 50 ? (
+                        <span>
+                          <strong>⚡ Peminat Sangat Antusias!</strong> Tersisa{' '}
+                          <strong>{remainingQuota} kursi</strong> dari kuota {participantQuota}{' '}
+                          peserta — <strong>Segera daftar sebelum kuota habis!</strong>
+                        </span>
+                      ) : (
+                        <span>
+                          <strong>✨ Kuota Terbatas {participantQuota} Peserta</strong> (Tersisa{' '}
+                          <strong>{remainingQuota} kursi</strong>) —{' '}
+                          <strong className="text-emerald-900">
+                            Segera daftar &amp; amankan kursimu sebelum kuota habis!
+                          </strong>
+                        </span>
+                      )}
+                    </div>
+
+                    {unverifiedParticipantsCount > 0 && !isQuotaFull && (
+                      <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-white/90 border border-slate-200/80 text-slate-700 shrink-0">
+                        ⏳ {unverifiedParticipantsCount} pendaftar sedang proses verifikasi
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Error or Duplicate Alerts */}
+                {(formError || duplicateParticipant) && (
+                  <div className="p-6 sm:px-8 space-y-3 bg-rose-50/30">
+                    {formError && (
+                      <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 flex items-start gap-2.5 text-xs text-rose-900">
+                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                        <span className="font-medium">{formError}</span>
+                      </div>
+                    )}
+
+                    {duplicateParticipant && (
+                      <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 space-y-3">
+                        <div className="flex items-start gap-2.5">
+                          <CheckCircle2 className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                          <div>
+                            <h4 className="text-xs font-bold text-amber-950">
+                              Nomor WhatsApp Sudah Terdaftar, Shalihah! 💕
+                            </h4>
+                            <p className="text-xs text-amber-900 mt-1">
+                              Kamu sudah terdaftar pada acara ini. Untuk melihat Kartu Pengenal atau
+                              klaim E-Sertifikat, silakan gunakan{' '}
+                              <strong>Kartu Pengenal Pendaftaran / Barcode QR</strong> pada tab{' '}
+                              <strong>02. Klaim Sertifikat</strong>.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDuplicateParticipant(null);
+                            setPortalTab('certificate');
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-800 text-white hover:bg-emerald-900 transition-all cursor-pointer"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          Buka Klaim Sertifikat / Kartu
                         </button>
                       </div>
                     )}
                   </div>
+                )}
 
-                  {transferPreviewDataUrl && (
-                    <div className="pt-1">
-                      <img
-                        src={transferPreviewDataUrl}
-                        alt="Pratinjau Bukti Transfer"
-                        className="h-28 w-auto rounded-xl border border-slate-200 object-cover shadow-2xs"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Q10: Supporter kami skincare For Her */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3">
-                  <div className="space-y-1">
-                    <label className="block text-sm sm:text-base font-medium text-slate-900">
-                      Supporter kami skincare For Her mau kasih gift untuk yang follow instagram
-                      nya, kamu mau ngga? 🤩
-                    </label>
-                    <a
-                      href="https://www.instagram.com/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block text-sm font-medium text-blue-600 hover:text-blue-700 underline"
-                    >
-                      Klik untuk follow!
-                    </a>
-                  </div>
-
-                  <div className="space-y-2.5 pt-1">
-                    {SUPPORTER_FOLLOW_OPTIONS.map((opt) => (
-                      <label
-                        key={opt}
-                        className="flex items-center gap-3 text-sm text-slate-800 cursor-pointer select-none py-0.5"
-                      >
-                        <input
-                          type="radio"
-                          name="followedSupporter"
-                          value={opt}
-                          checked={followedSupporter === opt}
-                          onChange={(e) => setFollowedSupporter(e.target.value)}
-                          className="w-4 h-4 accent-purple-700 cursor-pointer"
-                        />
-                        <span>{opt}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Q11: Pernyataan Kesiapan Mengikuti Muslimah Healing Day */}
-                <div className="bg-white rounded-2xl border border-pink-100/90 shadow-2xs p-5 sm:p-6 space-y-3.5">
-                  <label className="block text-sm sm:text-base font-medium text-slate-900 leading-relaxed">
-                    Dengan mengisi form ini, saya siap ikut serta dalam Muslimah Healing Day,
-                    memberi ruang jeda &amp; aman untuk diri saya serta siap menerima kebaikan di
-                    hari itu 🌸 <span className="text-rose-500">*</span>
-                  </label>
-
-                  <div className="space-y-2.5">
-                    {COMMITMENT_OPTIONS.map((opt) => (
-                      <label
-                        key={opt}
-                        className="flex items-center gap-3 text-sm text-slate-800 cursor-pointer select-none py-0.5"
-                      >
-                        <input
-                          type="radio"
-                          name="commitmentStatement"
-                          required
-                          value={opt}
-                          checked={commitmentStatement === opt}
-                          onChange={(e) => setCommitmentStatement(e.target.value)}
-                          className="w-4 h-4 accent-purple-700 cursor-pointer"
-                        />
-                        <span>{opt}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Submit & Secondary Switcher Card */}
-                <div className="bg-white rounded-2xl border border-purple-100 shadow-xs p-5 space-y-3">
-                  {editingParticipantId && (
-                    <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-between gap-2 text-xs text-amber-950">
-                      <span>
-                        Mode Perbarui Data untuk Kartu &amp; E-Sertifikat (<strong>{editingParticipantId}</strong>)
+                {/* CHAPTER 01: IDENTITAS & TEMPAT TINGGAL / DOMISILI (4 Pertanyaan Inti Kartu & E-Sertifikat) */}
+                <div className="p-6 sm:p-8 space-y-6">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-semibold text-purple-900">
+                        01. Identitas &amp; Domisili Peserta
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingParticipantId(null);
-                          setFullName('');
-                          setPhone('');
-                          setRole('');
-                          setInstitution('');
-                        }}
-                        className="font-bold text-amber-800 hover:underline cursor-pointer"
-                      >
-                        Batal Edit
-                      </button>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Keempat data di bawah ini otomatis terhubung ke Kartu Pengenal QR dan
+                        E-Sertifikat resmi kamu
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700">
+                      Sinkron Otomatis ke Kartu &amp; Sertifikat
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    {/* Q1: Nama */}
+                    <div className="space-y-1.5">
+                      <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                        {formTemplate.q1NameLabel} <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        placeholder={formTemplate.q1NamePlaceholder}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] hover:bg-slate-50 focus:bg-white border border-slate-200/90 focus:border-slate-900 focus:outline-none text-sm text-slate-900 transition-colors placeholder:text-slate-400"
+                      />
+                      <p className="text-[11px] text-slate-400">
+                        Dicetak sebagai nama penerima pada Kartu QR &amp; E-Sertifikat
+                      </p>
+                    </div>
+
+                    {/* Q2: No WhatsApp */}
+                    <div className="space-y-1.5">
+                      <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                        {formTemplate.q2PhoneLabel} <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="Contoh: 0812-3456-7890"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] hover:bg-slate-50 focus:bg-white border border-slate-200/90 focus:border-slate-900 focus:outline-none text-sm font-mono tabular-nums text-slate-900 transition-colors placeholder:font-sans placeholder:text-slate-400"
+                      />
+                      <p className="text-[11px] text-slate-400">
+                        Nomor aktif untuk sinkronisasi Kartu Pengenal &amp; info acara
+                      </p>
+                    </div>
+
+                    {/* Q3: Pekerjaan / Kegiatan Favorit */}
+                    <div className="space-y-2">
+                      <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                        {formTemplate.q3RoleLabel} <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={role}
+                        onChange={(e) => setRole(e.target.value)}
+                        placeholder="Contoh: Mahasiswi / Ibu Rumah Tangga / Karyawan"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] hover:bg-slate-50 focus:bg-white border border-slate-200/90 focus:border-slate-900 focus:outline-none text-sm text-slate-900 transition-colors placeholder:text-slate-400"
+                      />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {[
+                          'Mahasiswi',
+                          'Ibu Rumah Tangga',
+                          'Karyawan Swasta',
+                          'Wirausaha',
+                          'Pendidik / Guru',
+                          'Freelancer',
+                        ].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setRole(preset)}
+                            className={cn(
+                              'px-2 py-0.5 rounded-md text-[11px] font-medium border transition-colors cursor-pointer',
+                              role === preset
+                                ? 'bg-slate-900 text-white border-slate-900'
+                                : 'bg-slate-50 text-slate-600 border-slate-200/80 hover:bg-slate-100'
+                            )}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Q4: Dibumi sebelah mana kamu tinggal? (Tempat Tinggal / Domisili) */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                          {formTemplate.q4DomicileLabel} <span className="text-rose-500">*</span>
+                        </label>
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 shrink-0">
+                          Tempat Tinggal / Domisili
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        value={domicile}
+                        onChange={(e) => setDomicile(e.target.value)}
+                        placeholder={formTemplate.q4DomicilePlaceholder}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] hover:bg-slate-50 focus:bg-white border border-slate-200/90 focus:border-slate-900 focus:outline-none text-sm text-slate-900 transition-colors placeholder:text-slate-400"
+                      />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {[
+                          'Depok',
+                          'Jakarta Selatan',
+                          'Jakarta Timur',
+                          'Bogor',
+                          'Bekasi',
+                          'Tangerang Selatan',
+                        ].map((city) => (
+                          <button
+                            key={city}
+                            type="button"
+                            onClick={() => setDomicile(city)}
+                            className={cn(
+                              'px-2 py-0.5 rounded-md text-[11px] font-medium border transition-colors cursor-pointer',
+                              domicile === city
+                                ? 'bg-slate-900 text-white border-slate-900'
+                                : 'bg-slate-50 text-slate-600 border-slate-200/80 hover:bg-slate-100'
+                            )}
+                          >
+                            📍 {city}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* CHAPTER 02: REFLEKSI DIRI & HARAPAN HEALING (Custom Tactile Cards — Zero Radio Circles) */}
+                <div className="p-6 sm:p-8 space-y-7">
+                  <div>
+                    <span className="text-xs font-semibold text-purple-900">
+                      02. Refleksi Diri &amp; Harapan Healing
+                    </span>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Pilih kondisi yang paling menggambarkan perasaan dan harapanmu saat ini
+                    </p>
+                  </div>
+
+                  {/* Q5: Gimana perasaan kamu sebelum ikut acara ini? */}
+                  <div className="space-y-2.5">
+                    <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                      {formTemplate.q5FeelingLabel}
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {formTemplate.q5FeelingOptions.map((opt) => {
+                        const isSelected = feelingBeforeEvent === opt;
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setFeelingBeforeEvent(opt)}
+                            className={cn(
+                              'px-4 py-3 rounded-xl border text-left text-xs sm:text-sm transition-all flex items-center justify-between gap-3 cursor-pointer',
+                              isSelected
+                                ? 'bg-purple-50/60 border-slate-900 text-slate-900 font-semibold shadow-2xs'
+                                : 'bg-[#FAF9F6] hover:bg-slate-50 border-slate-200/80 text-slate-700'
+                            )}
+                          >
+                            <span>{opt}</span>
+                            <span
+                              className={cn(
+                                'w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition-colors',
+                                isSelected
+                                  ? 'bg-slate-900 border-slate-900 text-white'
+                                  : 'border-slate-300 bg-white'
+                              )}
+                            >
+                              {isSelected && <Check className="w-2.5 h-2.5" />}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Q7: Luka apa yang kamu harap bisa sembuh dalam dirimu? */}
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                        {formTemplate.q7WoundLabel} <span className="text-rose-500">*</span>
+                      </label>
+                      {formTemplate.q7WoundSubLabel && (
+                        <p className="text-xs italic text-slate-500 mt-0.5">
+                          {formTemplate.q7WoundSubLabel}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {formTemplate.q7WoundOptions.map((opt) => {
+                        const isSelected = healingWoundChoice === opt;
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setHealingWoundChoice(opt)}
+                            className={cn(
+                              'px-4 py-3 rounded-xl border text-left text-xs sm:text-sm transition-all flex items-center justify-between gap-3 cursor-pointer',
+                              isSelected
+                                ? 'bg-purple-50/60 border-slate-900 text-slate-900 font-semibold shadow-2xs'
+                                : 'bg-[#FAF9F6] hover:bg-slate-50 border-slate-200/80 text-slate-700'
+                            )}
+                          >
+                            <span>{opt}</span>
+                            <span
+                              className={cn(
+                                'w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition-colors',
+                                isSelected
+                                  ? 'bg-slate-900 border-slate-900 text-white'
+                                  : 'border-slate-300 bg-white'
+                              )}
+                            >
+                              {isSelected && <Check className="w-2.5 h-2.5" />}
+                            </span>
+                          </button>
+                        );
+                      })}
+
+                      {formTemplate.q7AllowOther && (
+                        <div
+                          onClick={() => setHealingWoundChoice('OTHER')}
+                          className={cn(
+                            'sm:col-span-2 px-4 py-2.5 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center gap-2.5 cursor-pointer',
+                            healingWoundChoice === 'OTHER'
+                              ? 'bg-purple-50/60 border-slate-900'
+                              : 'bg-[#FAF9F6] hover:bg-slate-50 border-slate-200/80'
+                          )}
+                        >
+                          <span className="text-xs sm:text-sm font-medium text-slate-800 shrink-0">
+                            Yang lain:
+                          </span>
+                          <input
+                            type="text"
+                            value={healingWoundOther}
+                            onFocus={() => setHealingWoundChoice('OTHER')}
+                            onChange={(e) => {
+                              setHealingWoundChoice('OTHER');
+                              setHealingWoundOther(e.target.value);
+                            }}
+                            placeholder="Tuliskan hal lain yang ingin kamu pulihkan..."
+                            className="flex-1 px-3 py-1.5 rounded-lg bg-white border border-slate-200/90 focus:border-slate-900 focus:outline-none text-xs sm:text-sm text-slate-900"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Q8: Harapan atau doa yang ingin kamu capai dari acara ini? (opsional) */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                        {formTemplate.q8HopeLabel}
+                      </label>
+                      <span className="text-[11px] text-slate-400">Opsional</span>
+                    </div>
+                    <textarea
+                      rows={2}
+                      value={hopeOrPrayer}
+                      onChange={(e) => setHopeOrPrayer(e.target.value)}
+                      placeholder="Tuliskan harapan atau doa terbaikmu dari kegiatan ini..."
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF9F6] hover:bg-slate-50 focus:bg-white border border-slate-200/90 focus:border-slate-900 focus:outline-none text-sm text-slate-900 transition-colors placeholder:text-slate-400 resize-none"
+                    />
+                  </div>
+                </div>
+
+                {/* CHAPTER 03: KOMUNITAS, BUKTI TRANSFER & KOMITMEN KEHADIRAN */}
+                <div className="p-6 sm:p-8 space-y-7">
+                  <div>
+                    <span className="text-xs font-semibold text-purple-900">
+                      03. Komunitas, Konfirmasi Transfer &amp; Kesiapan Hadir
+                    </span>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Langkah penutup sebelum Kartu Pengenal QR kamu diterbitkan secara otomatis
+                    </p>
+                  </div>
+
+                  {/* Q6 & Q10: Minimalist Social Connection Cards */}
+                  <div className="grid grid-cols-1 gap-4">
+                    {/* Q6: Sudah follow @Healyou.official belum? */}
+                    <div className="p-4 rounded-2xl bg-[#FAF9F6] border border-slate-200/80 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="text-xs sm:text-sm font-semibold text-slate-900">
+                          {formTemplate.q6FollowLabel} <span className="text-rose-500">*</span>
+                        </label>
+                        {formTemplate.q6FollowLinkText && (
+                          <a
+                            href={
+                              formTemplate.q6FollowLinkUrl ||
+                              'https://www.instagram.com/healyou.official'
+                            }
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-white hover:bg-purple-50 text-purple-900 border border-slate-200/90 transition-colors"
+                          >
+                            <span>{formTemplate.q6FollowLinkText}</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        {formTemplate.q6FollowOptions.map((opt) => {
+                          const isSelected = followedHealYou === opt;
+                          return (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => setFollowedHealYou(opt)}
+                              className={cn(
+                                'px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all inline-flex items-center gap-2 cursor-pointer',
+                                isSelected
+                                  ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                              )}
+                            >
+                              {isSelected && <Check className="w-3.5 h-3.5 text-emerald-300" />}
+                              <span>{opt}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Q10: Supporter */}
+                    {formTemplate.q10SupporterEnabled && (
+                      <div className="p-4 rounded-2xl bg-[#FAF9F6] border border-slate-200/80 space-y-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <label className="text-xs sm:text-sm font-semibold text-slate-900 max-w-lg leading-snug">
+                            {formTemplate.q10SupporterLabel}
+                          </label>
+                          {formTemplate.q10SupporterLinkText && (
+                            <a
+                              href={
+                                formTemplate.q10SupporterLinkUrl || 'https://www.instagram.com/'
+                              }
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-white hover:bg-purple-50 text-purple-900 border border-slate-200/90 transition-colors shrink-0"
+                            >
+                              <span>{formTemplate.q10SupporterLinkText}</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {formTemplate.q10SupporterOptions.map((opt) => {
+                            const isSelected = followedSupporter === opt;
+                            return (
+                              <button
+                                key={opt}
+                                type="button"
+                                onClick={() => setFollowedSupporter(opt)}
+                                className={cn(
+                                  'px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all inline-flex items-center gap-2 cursor-pointer',
+                                  isSelected
+                                    ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                                )}
+                              >
+                                {isSelected && <Check className="w-3.5 h-3.5 text-emerald-300" />}
+                                <span>{opt}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Q9: Modern Digital Bank Pass & Upload Dropzone */}
+                  {formTemplate.q9TransferEnabled && (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="block text-xs sm:text-sm font-semibold text-slate-900">
+                          {formTemplate.q9TransferLabel} <span className="text-rose-500">*</span>
+                        </label>
+                        <span className="text-[11px] text-slate-400">
+                          Format Gambar / PDF · Maks 10 MB
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-stretch">
+                        {/* Left: Minimalist Dark Bank Card */}
+                        <div className="sm:col-span-5 rounded-2xl bg-slate-900 text-white p-4 flex flex-col justify-between gap-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="px-2.5 py-0.5 rounded-md bg-white/15 text-[11px] font-bold tracking-wider">
+                              {formTemplate.q9BankName}
+                            </span>
+                            <CreditCard className="w-4 h-4 text-slate-400" />
+                          </div>
+
+                          <div>
+                            <p className="text-[11px] text-slate-400">Nomor Rekening Tujuan</p>
+                            <p className="text-base sm:text-lg font-mono font-bold tracking-wider text-white tabular-nums mt-0.5">
+                              {formTemplate.q9BankAccount}
+                            </p>
+                            <p className="text-xs text-slate-300 mt-0.5">
+                              {formTemplate.q9BankHolder}
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleCopyRekening()}
+                            className="w-full py-2 px-3 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/20 text-white border border-white/15 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            {copiedRekening ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-300" />
+                                <span>Nomor Rekening Tersalin</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5 text-slate-300" />
+                                <span>Salin Nomor Rekening</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Right: Minimalist Upload Dropzone */}
+                        <div className="sm:col-span-7 rounded-2xl border border-dashed border-slate-300 bg-[#FAF9F6] p-4 flex flex-col justify-center">
+                          <input
+                            ref={transferInputRef}
+                            type="file"
+                            accept="image/*,.pdf"
+                            onChange={handleTransferFileChange}
+                            className="hidden"
+                          />
+
+                          {!transferFileName ? (
+                            <button
+                              type="button"
+                              onClick={() => transferInputRef.current?.click()}
+                              className="w-full h-full min-h-[120px] flex flex-col items-center justify-center text-center gap-2 cursor-pointer group"
+                            >
+                              <div className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-700 group-hover:border-slate-900 transition-colors">
+                                <Upload className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <span className="text-xs font-semibold text-slate-900 block">
+                                  Klik untuk Unggah Bukti Transfer
+                                </span>
+                                <span className="text-[11px] text-slate-500 mt-0.5 block">
+                                  Tersimpan aman di perangkat Anda (JPG, PNG, atau PDF)
+                                </span>
+                              </div>
+                            </button>
+                          ) : (
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {transferPreviewDataUrl ? (
+                                  <img
+                                    src={transferPreviewDataUrl}
+                                    alt="Pratinjau Bukti Transfer"
+                                    className="w-16 h-16 rounded-xl border border-slate-200 object-cover shrink-0 bg-white"
+                                  />
+                                ) : (
+                                  <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center shrink-0">
+                                    <CheckCircle2 className="w-5 h-5" />
+                                  </div>
+                                )}
+                                <div className="min-w-0">
+                                  <span className="text-[10px] font-semibold text-emerald-700 block">
+                                    ✓ Bukti Transfer Terlampir
+                                  </span>
+                                  <p className="text-xs font-bold text-slate-900 truncate">
+                                    {transferFileName}
+                                  </p>
+                                  <div className="flex items-center gap-2 mt-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => transferInputRef.current?.click()}
+                                      className="text-[11px] font-semibold text-purple-800 hover:underline cursor-pointer"
+                                    >
+                                      Ganti File
+                                    </button>
+                                    <span className="text-slate-300">·</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setTransferFileName('');
+                                        setTransferPreviewDataUrl('');
+                                        if (transferInputRef.current) {
+                                          transferInputRef.current.value = '';
+                                        }
+                                      }}
+                                      className="text-[11px] font-semibold text-rose-600 hover:underline cursor-pointer"
+                                    >
+                                      Hapus
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Sistem Verifikasi / Approval Admin & Panitia Info Bar */}
+                      {formTemplate.paymentAccessCodeRequired && (
+                        <div className="p-4 rounded-2xl bg-[#FAF9F6] border border-slate-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="space-y-0.5 text-xs text-slate-600">
+                            <p className="font-semibold text-slate-900 flex items-center gap-1.5">
+                              <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0" />
+                              <span>
+                                Sistem Verifikasi / Approval Admin &amp; Panitia:
+                              </span>
+                            </p>
+                            <p className="leading-relaxed">
+                              Setelah mengirim formulir &amp; bukti transfer, Admin atau Panitia akan
+                              memverifikasi (ACC) pembayaranmu. Begitu disetujui,{' '}
+                              <strong>Kartu Pengenal (Barcode QR)</strong> resmi akan langsung aktif
+                              dan dapat diunduh di halaman ini. Konfirmasi cepat WA Admin:{' '}
+                              <a
+                                href={buildRequestAdminApprovalWhatsAppUrl({
+                                  name: fullName,
+                                  phone,
+                                  role,
+                                  domicile,
+                                  transferFile: transferFileName,
+                                })}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-mono font-bold text-emerald-800 underline decoration-emerald-500/60 underline-offset-2 hover:text-emerald-950"
+                              >
+                                <span>{adminWaDisplay}</span>
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            </p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  <button
-                    type="submit"
-                    className="w-full py-3.5 px-5 rounded-xl font-bold text-sm text-purple-950 shadow-sm hover:opacity-95 transition-all flex items-center justify-center gap-2 cursor-pointer border border-purple-300/80"
-                    style={{
-                      background:
-                        'linear-gradient(115deg, #f0bdfb 0%, #c9b3fc 50%, #89b4ff 100%)',
-                    }}
-                  >
-                    <UserPlus className="w-4 h-4" />
-                    {editingParticipantId
-                      ? 'Simpan Perubahan Data Kartu & E-Sertifikat 🌸'
-                      : 'Kirim Formulir & Terbitkan Kartu Pengenal QR 🌸'}
-                  </button>
+                  {/* Q11: Pernyataan Kesiapan Mengikuti Muslimah Healing Day */}
+                  <div className="p-5 rounded-2xl bg-[#FAF9F6] border border-slate-200/90 space-y-3.5">
+                    <label className="block text-xs sm:text-sm font-medium text-slate-800 leading-relaxed">
+                      {formTemplate.q11CommitmentLabel} <span className="text-rose-500">*</span>
+                    </label>
 
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-xs text-slate-500">
-                    <span>Sudah daftar &amp; punya Kartu Pengenal QR?</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {formTemplate.q11CommitmentOptions.map((opt) => {
+                        const isSelected = commitmentStatement === opt;
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setCommitmentStatement(opt)}
+                            className={cn(
+                              'px-4 py-3 rounded-xl border text-left text-xs sm:text-sm transition-all flex items-center justify-between gap-2.5 cursor-pointer',
+                              isSelected
+                                ? 'bg-slate-900 border-slate-900 text-white font-semibold shadow-2xs'
+                                : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-800'
+                            )}
+                          >
+                            <span>{opt}</span>
+                            <span
+                              className={cn(
+                                'w-4 h-4 rounded-full flex items-center justify-center shrink-0 border',
+                                isSelected
+                                  ? 'bg-emerald-400 border-emerald-400 text-slate-950'
+                                  : 'border-slate-300 bg-white'
+                              )}
+                            >
+                              {isSelected && <Check className="w-2.5 h-2.5" />}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Submit & Secondary Action Footer */}
+                  <div className="pt-2 space-y-3">
+                    {editingParticipantId && (
+                      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-between gap-2 text-xs text-amber-950">
+                        <span>
+                          Mode Perbarui Data Kartu &amp; E-Sertifikat (
+                          <strong>{editingParticipantId}</strong>)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingParticipantId(null);
+                            setViewModeAfterReg('card');
+                            setFullName('');
+                            setPhone('');
+                            setRole('');
+                            setDomicile('');
+                          }}
+                          className="font-bold text-amber-800 hover:underline cursor-pointer"
+                        >
+                          Batal Edit
+                        </button>
+                      </div>
+                    )}
+
                     <button
-                      type="button"
-                      onClick={() => setPortalTab('certificate')}
-                      className="font-bold text-purple-700 hover:text-purple-900 inline-flex items-center gap-1 cursor-pointer"
+                      type="submit"
+                      className="w-full py-3.5 px-6 rounded-xl font-semibold text-sm bg-slate-900 hover:bg-purple-950 text-white shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
                     >
-                      Upload Kartu / Scan Barcode di Sini
-                      <ArrowRight className="w-3.5 h-3.5" />
+                      <UserPlus className="w-4 h-4" />
+                      <span>
+                        {editingParticipantId
+                          ? 'Simpan Perubahan Data Kartu & E-Sertifikat 🌸'
+                          : formTemplate.submitButtonText}
+                      </span>
                     </button>
                   </div>
                 </div>
               </form>
-            </div>
+              </div>
+            )}
 
-            {/* Right Column: Instant Kartu Pengenal & Signed QR Code Preview */}
-            <div className="lg:col-span-5 flex flex-col gap-4">
-              {registeredParticipant ? (
-                <div className="bg-white rounded-3xl border border-emerald-200 shadow-sm p-5 space-y-4">
-                  <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-start gap-3">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+            {/* VIEW B: FOCUSED POST-REGISTRATION STATUS & KARTU PENGENAL QR (Shown when registered & not viewing form) */}
+            {registeredParticipant && viewModeAfterReg === 'card' && !editingParticipantId && (
+              <div className="lg:col-span-12 grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">
+                {/* LEFT COLUMN (5/12): Official Card Preview OR Locked Proof Card */}
+                <div className="lg:col-span-5 lg:sticky lg:top-20 bg-white rounded-3xl border border-slate-200/90 shadow-xs p-6 sm:p-7 space-y-5">
+                  <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
                     <div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
-                        Pendaftaran Berhasil · Tersimpan di Perangkat Ini
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-purple-800 block">
+                        Dokumen Identitas Resmi
                       </span>
-                      <h3 className="text-sm font-bold text-emerald-950">
-                        Wajib Simpan Kartu Pengenal Anda!
+                      <h3 className="text-base font-bold text-slate-900 mt-0.5">
+                        Kartu Pengenal QR ({registeredParticipant.id})
                       </h3>
-                      <p className="text-xs text-emerald-800 mt-0.5">
-                        Kartu ini dilengkapi <strong>Barcode QR Berenkripsi</strong> yang menjadi
-                        kunci tunggal untuk <strong>Scan &amp; Klaim E-Sertifikat</strong> Anda
-                        setelah acara selesai.
-                      </p>
                     </div>
+                    <span
+                      className={cn(
+                        'px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border',
+                        isRegisteredCardUnlocked
+                          ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                          : 'bg-amber-50 text-amber-900 border-amber-200'
+                      )}
+                    >
+                      {isRegisteredCardUnlocked ? 'Kartu QR Aktif' : 'Menunggu ACC'}
+                    </span>
                   </div>
 
-                  {/* High-Res Botanical ID Card Preview */}
-                  <div className="rounded-2xl bg-slate-50 border border-slate-200/80 p-3 flex items-center justify-center min-h-[340px]">
-                    {isRenderingCard || !cardPreviewUrl ? (
-                      <div className="flex flex-col items-center gap-2 py-12 text-slate-400">
-                        <div className="w-7 h-7 border-2 border-purple-600 border-t-transparent rounded-full animate-spin" />
-                        <span className="text-xs font-medium">Merender Kartu Pengenal QR...</span>
+                  {isRegisteredCardUnlocked ? (
+                    <div className="space-y-5">
+                      {/* High-Res Botanical ID Card Preview */}
+                      <div className="rounded-2xl bg-[#FAF9F6] border border-slate-200/80 p-5 flex items-center justify-center min-h-[340px]">
+                        {isRenderingCard || !cardPreviewUrl ? (
+                          <div className="flex flex-col items-center gap-2 py-12 text-slate-400">
+                            <div className="w-7 h-7 border-2 border-slate-900 border-t-transparent rounded-full animate-spin" />
+                            <span className="text-xs font-medium">
+                              Merender Kartu Pengenal QR...
+                            </span>
+                          </div>
+                        ) : (
+                          <img
+                            src={cardPreviewUrl}
+                            alt={`Kartu Peserta ${registeredParticipant.name}`}
+                            className="w-full max-w-[310px] h-auto rounded-2xl shadow-sm"
+                          />
+                        )}
                       </div>
-                    ) : (
-                      <img
-                        src={cardPreviewUrl}
-                        alt={`Kartu Peserta ${registeredParticipant.name}`}
-                        className="w-full max-w-[300px] h-auto rounded-2xl shadow-md"
-                      />
-                    )}
-                  </div>
+
+                      {/* Download & Switch to Certificate Verification */}
+                      <div className="space-y-2.5">
+                        <button
+                          type="button"
+                          onClick={handleDownloadRegisteredCard}
+                          className="w-full py-3.5 px-4 rounded-xl text-xs font-bold bg-[#1E1136] hover:bg-[#2d1a50] text-white transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+                        >
+                          <Download className="w-4 h-4" />
+                          <span>Unduh Kartu Pengenal QR (PNG)</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!verifiedParticipant) {
+                              setVerifiedParticipant(registeredParticipant);
+                            }
+                            setPortalTab('certificate');
+                          }}
+                          className="w-full py-3 px-4 rounded-xl text-xs font-semibold bg-[#FAF9F6] hover:bg-slate-100 text-slate-900 border border-slate-200/90 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          <Upload className="w-4 h-4 text-emerald-700" />
+                          <span>Buka Klaim E-Sertifikat</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Locked Card State + Uploaded Transfer Proof Preview */
+                    <div className="space-y-4">
+                      <div className="p-5 rounded-2xl bg-[#FAF9F6] border border-amber-200/90 text-center space-y-3">
+                        <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center mx-auto">
+                          <Lock className="w-6 h-6" />
+                        </div>
+                        <div className="space-y-1">
+                          <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900">
+                            Barcode QR Terkunci Sementara
+                          </span>
+                          <h4 className="text-sm font-bold text-slate-900">
+                            Menunggu Verifikasi Admin / Panitia
+                          </h4>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            Kartu Pengenal ber-Barcode QR akan muncul otomatis di panel ini begitu
+                            bukti pembayaran Anda diverifikasi (ACC).
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Uploaded Transfer Proof Preview & Option to Re-upload */}
+                      <div className="p-4 rounded-2xl bg-[#FAF9F6] border border-slate-200/90 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <span className="text-xs font-bold text-slate-900 block">
+                              Bukti Transfer Pembayaran Kamu
+                            </span>
+                            <span className="text-[11px] text-slate-500">
+                              {registeredParticipant.paymentFileName ||
+                                savedFormDetails?.transferFileName ||
+                                'Bukti transfer telah dilampirkan'}
+                            </span>
+                          </div>
+
+                          <div>
+                            <input
+                              ref={reuploadInputRef}
+                              type="file"
+                              accept="image/*,.pdf"
+                              onChange={handleReuploadTransferProof}
+                              className="hidden"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => reuploadInputRef.current?.click()}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white hover:bg-slate-100 text-slate-800 border border-slate-200 transition-colors cursor-pointer"
+                            >
+                              <Upload className="w-3.5 h-3.5 text-purple-800" />
+                              <span>Ganti Bukti</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {reuploadSuccessNotice && (
+                          <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold">
+                            ✓ Bukti transfer berhasil diperbarui dan dikirim ke antrean verifikasi
+                            Admin &amp; Panitia.
+                          </div>
+                        )}
+
+                        {(registeredParticipant.paymentProofUrl ||
+                          savedFormDetails?.transferPreviewDataUrl) && (
+                          <div className="rounded-xl overflow-hidden border border-slate-200 bg-white p-2 flex items-center justify-center max-h-56">
+                            <img
+                              src={
+                                registeredParticipant.paymentProofUrl ||
+                                savedFormDetails?.transferPreviewDataUrl
+                              }
+                              alt="Pratinjau Bukti Transfer"
+                              className="max-h-52 w-auto object-contain rounded-lg"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* RIGHT COLUMN (7/12): Verification Status, WhatsApp Admin Confirmation & Synchronized Data */}
+                <div className="lg:col-span-7 space-y-6">
+                  {isRegisteredCardUnlocked ? (
+                    <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-6 sm:p-7 space-y-4">
+                      <div className="p-4 sm:p-5 rounded-2xl bg-emerald-50/70 border border-emerald-200 flex items-start justify-between gap-3 flex-wrap">
+                        <div className="flex items-start gap-3">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="text-[11px] font-semibold text-emerald-800">
+                              ✓ Pembayaran Terverifikasi oleh{' '}
+                              {registeredParticipant.paymentVerifiedBy || 'Admin / Panitia'} · Kartu
+                              QR Aktif
+                            </span>
+                            <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-0.5">
+                              Pendaftaran Terkonfirmasi ({registeredParticipant.name})
+                            </h3>
+                            <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                              Simpan Kartu Pengenal QR di sebelah kiri. Barcode QR terenkripsi di
+                              dalamnya adalah kunci tunggal untuk <strong>Check-in Kehadiran</strong>{' '}
+                              dan <strong>Klaim E-Sertifikat</strong>.
+                            </p>
+                          </div>
+                        </div>
+
+                        {canVerifyPayment && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = verifyParticipantPayment(
+                                registeredParticipant.id,
+                                false
+                              );
+                              if (updated) setRegisteredParticipant(updated);
+                              setPaymentVerifyTick((t) => t + 1);
+                            }}
+                            className="px-3 py-1.5 rounded-xl text-[11px] font-semibold bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 transition-colors cursor-pointer shrink-0"
+                          >
+                            Batalkan Status ACC
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-6 sm:p-7 space-y-5">
+                      <div className="p-4 sm:p-5 rounded-2xl bg-amber-50/90 border border-amber-200 flex items-start gap-3">
+                        <Clock className="w-5 h-5 text-amber-800 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-900">
+                            ⏳ Menunggu Verifikasi / Approval Admin &amp; Panitia
+                          </span>
+                          <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                            Pendaftaran Tercatat · Kartu QR Akan Aktif Setelah Pembayaran Di-ACC 🔒
+                          </h3>
+                          <p className="text-xs text-slate-700 leading-relaxed">
+                            Terima kasih <strong>{registeredParticipant.name}</strong> (ID
+                            Pendaftaran:{' '}
+                            <strong className="font-mono">{registeredParticipant.id}</strong>).
+                            Formulir dan bukti transfer kamu sudah masuk ke sistem. Demi keamanan,{' '}
+                            <strong>Kartu Pengenal (Barcode QR)</strong> akan terbuka otomatis begitu
+                            pembayaranmu diverifikasi (ACC) oleh <strong>Admin atau Panitia</strong>.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Quick 1-Click Approval Bar if current viewer is Admin or Panitia */}
+                      {canVerifyPayment && (
+                        <div className="p-4 rounded-2xl bg-emerald-950 text-white border border-emerald-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 block">
+                              Kontrol Cepat Admin / Panitia
+                            </span>
+                            <p className="text-xs text-emerald-50">
+                              Anda sedang masuk sebagai Admin/Panitia. Klik tombol di samping untuk
+                              menyetujui (ACC) pembayaran{' '}
+                              <strong>{registeredParticipant.name}</strong> dan membuka Kartu QR
+                              sekarang:
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = verifyParticipantPayment(
+                                registeredParticipant.id,
+                                true
+                              );
+                              if (updated) setRegisteredParticipant(updated);
+                              playScanBeep('success');
+                              setPaymentVerifyTick((t) => t + 1);
+                            }}
+                            className="px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition-colors flex items-center justify-center gap-1.5 cursor-pointer shrink-0 shadow-sm"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Terima / ACC Pembayaran Sekarang</span>
+                          </button>
+                        </div>
+                      )}
+
+                      {/* WhatsApp Admin Confirmation & Auto-Refresh Status */}
+                      <div className="p-4 sm:p-5 rounded-2xl bg-slate-900 text-white space-y-3.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-bold flex items-center gap-1.5 text-white">
+                            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                            Konfirmasi &amp; Percepat Verifikasi (ACC)
+                          </span>
+                          <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-md bg-white/10 text-emerald-300">
+                            WA Admin: {adminWaDisplay}
+                          </span>
+                        </div>
+
+                        <p className="text-xs text-slate-300 leading-relaxed">
+                          Klik tombol di bawah untuk mengirim pesan konfirmasi langsung ke WhatsApp
+                          Admin (
+                          <a
+                            href={buildRequestAdminApprovalWhatsAppUrl({
+                              participantId: registeredParticipant.id,
+                              name: registeredParticipant.name,
+                              phone: registeredParticipant.phone || '',
+                              role: registeredParticipant.role || '',
+                              domicile: registeredParticipant.institution || '',
+                              transferFile:
+                                registeredParticipant.paymentFileName ||
+                                savedFormDetails?.transferFileName ||
+                                'Sudah diunggah di formulir',
+                            })}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono font-bold text-emerald-300 underline decoration-emerald-400/70 underline-offset-2 hover:text-white"
+                          >
+                            {adminWaDisplay}
+                          </a>
+                          ). Begitu Admin atau Panitia menekan tombol <strong>ACC</strong>, halaman
+                          ini akan otomatis membuka <strong>Kartu Pengenal (Barcode QR)</strong>{' '}
+                          kamu:
+                        </p>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <a
+                            href={buildRequestAdminApprovalWhatsAppUrl({
+                              participantId: registeredParticipant.id,
+                              name: registeredParticipant.name,
+                              phone: registeredParticipant.phone || '',
+                              role: registeredParticipant.role || '',
+                              domicile: registeredParticipant.institution || '',
+                              transferFile:
+                                registeredParticipant.paymentFileName ||
+                                savedFormDetails?.transferFileName ||
+                                'Sudah diunggah di formulir',
+                            })}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="py-2.5 px-4 rounded-xl text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors flex items-center justify-center gap-2"
+                          >
+                            <span>Hubungi WA Admin ({adminWaDisplay})</span>
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const latest = participants.find(
+                                (p) => p.id.toUpperCase() === registeredParticipant.id.toUpperCase()
+                              );
+                              if (latest) setRegisteredParticipant(latest);
+                              setPaymentVerifyTick((t) => t + 1);
+                            }}
+                            className="py-2.5 px-4 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-white border border-white/15 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5 text-emerald-300" />
+                            <span>Cek Status Verifikasi Terbaru</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Linked Barcode Pengenal <-> E-Sertifikat Synchronization Summary */}
-                  <div className="p-3.5 rounded-2xl bg-purple-50/70 border border-purple-200/80 space-y-2 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-purple-950 flex items-center gap-1.5 text-[11px] uppercase tracking-wider">
-                        <Link2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        Sinkronisasi Data Kartu &amp; E-Sertifikat
+                  <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-6 sm:p-7 space-y-4 text-xs">
+                    <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                      <span className="font-bold text-slate-900 flex items-center gap-1.5 text-sm">
+                        <Link2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                        Data Tersinkronisasi ke Kartu &amp; Sertifikat
                       </span>
-                      <span className="font-mono font-bold text-[10px] px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                      <span className="font-mono font-semibold text-[11px] px-2.5 py-1 rounded-lg bg-purple-50 text-purple-900 border border-purple-200/70">
                         SIG-{computeParticipantQrSignature(registeredParticipant.id)}
                       </span>
                     </div>
-                    <p className="text-[11px] text-slate-600 font-mono break-all">
-                      No. Sertifikat: <strong className="text-purple-950">{registeredCertNumber}</strong>
+                    <p className="text-xs text-slate-500 font-mono break-all">
+                      No. Sertifikat:{' '}
+                      <strong className="text-slate-900">{registeredCertNumber}</strong>
                     </p>
 
-                    <div className="pt-2 border-t border-purple-200/60 space-y-1 text-[11px] text-slate-700">
-                      <p>
-                        <strong>1. Nama (Kartu &amp; Sertifikat):</strong>{' '}
-                        <span className="font-semibold text-slate-900">{registeredParticipant.name}</span>
-                      </p>
-                      <p>
-                        <strong>2. No. WhatsApp (Kartu &amp; Kontak):</strong>{' '}
-                        <span className="font-mono text-slate-900">{registeredParticipant.phone || '-'}</span>
-                      </p>
-                      <p>
-                        <strong>3. Pekerjaan / Kegiatan (Kartu &amp; Sertifikat):</strong>{' '}
-                        <span className="text-slate-900">{registeredParticipant.role || '-'}</span>
-                      </p>
-                      <p>
-                        <strong>4. Domisili / Tinggal (Kartu &amp; Sertifikat):</strong>{' '}
-                        <span className="text-slate-900">{registeredParticipant.institution || '-'}</span>
-                      </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                      <div className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-slate-200/70">
+                        <span className="text-[11px] text-slate-400 block">1. Nama Peserta</span>
+                        <span className="font-semibold text-slate-900 mt-0.5 block text-sm">
+                          {registeredParticipant.name}
+                        </span>
+                      </div>
+                      <div className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-slate-200/70">
+                        <span className="text-[11px] text-slate-400 block">2. No. WhatsApp</span>
+                        <span className="font-mono font-semibold text-slate-900 mt-0.5 block text-sm">
+                          {registeredParticipant.phone || '-'}
+                        </span>
+                      </div>
+                      <div className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-slate-200/70">
+                        <span className="text-[11px] text-slate-400 block">
+                          3. Pekerjaan / Kegiatan
+                        </span>
+                        <span className="font-medium text-slate-900 mt-0.5 block text-sm">
+                          {registeredParticipant.role || '-'}
+                        </span>
+                      </div>
+                      <div className="p-3.5 rounded-2xl bg-[#FAF9F6] border border-slate-200/70">
+                        <span className="text-[11px] text-slate-400 block">
+                          4. Tempat Tinggal / Domisili
+                        </span>
+                        <span className="font-medium text-slate-900 mt-0.5 block text-sm">
+                          📍 {registeredParticipant.institution || '-'}
+                        </span>
+                      </div>
                     </div>
 
                     {justUpdatedData && (
-                      <div className="p-2 rounded-lg bg-emerald-100/80 text-emerald-900 text-[11px] font-semibold">
-                        ✓ Keempat data di atas telah diperbarui &amp; tersinkronisasi langsung ke Kartu Pengenal dan E-Sertifikat!
+                      <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-medium">
+                        ✓ Keempat data di atas telah diperbarui &amp; tersinkronisasi langsung ke
+                        Kartu Pengenal dan E-Sertifikat.
                       </div>
                     )}
 
-                    <button
-                      type="button"
-                      onClick={() => handleStartEditRegistered(registeredParticipant)}
-                      className="w-full mt-1 py-2 px-3 rounded-lg text-[11px] font-bold bg-white hover:bg-purple-100/80 text-purple-900 border border-purple-200 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Pencil className="w-3 h-3 text-purple-700" />
-                      <span>Edit / Perbarui 4 Data Kartu &amp; Sertifikat</span>
-                    </button>
-                  </div>
-
-                  {/* Muslimah Healing Day Local Registration Summary */}
-                  {savedFormDetails &&
-                    savedFormDetails.participantId.toUpperCase() ===
-                      registeredParticipant.id.toUpperCase() && (
-                      <div className="p-3.5 rounded-2xl bg-pink-50/60 border border-pink-200/80 space-y-1.5 text-xs text-slate-700">
-                        <p className="font-bold text-pink-950 text-[11px] uppercase tracking-wider">
-                          🌷 Ringkasan Pendaftaran Shalihah (Local Storage)
-                        </p>
-                        <p>
-                          <strong>Perasaan:</strong> {savedFormDetails.feelingBeforeEvent}
-                        </p>
-                        <p>
-                          <strong>Harapan Sembuh:</strong> {savedFormDetails.healingTarget}
-                        </p>
-                        {savedFormDetails.hopeOrPrayer && (
-                          <p>
-                            <strong>Harapan / Doa:</strong> &ldquo;{savedFormDetails.hopeOrPrayer}&rdquo;
-                          </p>
-                        )}
-                        {savedFormDetails.transferFileName && (
-                          <p className="text-emerald-800 font-medium">
-                            ✓ Bukti Transfer: {savedFormDetails.transferFileName}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                  {/* Download & Switch to Certificate Verification */}
-                  <div className="space-y-2.5">
-                    <button
-                      type="button"
-                      onClick={handleDownloadRegisteredCard}
-                      className="w-full py-3 px-4 rounded-xl text-xs font-bold bg-purple-900 hover:bg-purple-950 text-white shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Download className="w-4 h-4" />
-                      Unduh Kartu Pengenal Pendaftaran (PNG)
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!verifiedParticipant) {
-                          setVerifiedParticipant(registeredParticipant);
-                        }
-                        setPortalTab('certificate');
-                      }}
-                      className="w-full py-3 px-4 rounded-xl text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 transition-all flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Upload className="w-4 h-4 text-emerald-700" />
-                      Menuju Upload Kartu &amp; Klaim E-Sertifikat
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-white/85 rounded-3xl border border-purple-100 p-6 text-center space-y-4 shadow-xs">
-                  <div className="w-14 h-14 rounded-2xl bg-purple-50 border border-purple-100 text-purple-700 flex items-center justify-center mx-auto">
-                    <QrCode className="w-7 h-7" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      Kartu Pengenal Ber-Barcode QR Sebagai Kunci Sertifikat
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      Begitu Anda mendaftar, sistem menerbitkan{' '}
-                      <strong>Kartu Pengenal Pendaftaran (PNG)</strong> dengan Barcode QR bertanda
-                      tangan digital unik yang hanya dimiliki oleh Anda.
-                    </p>
-                  </div>
-                  <div className="text-left bg-purple-50/60 rounded-2xl p-4 border border-purple-100 space-y-2.5 text-xs text-slate-700">
-                    <div className="font-bold text-purple-950 uppercase tracking-wider text-[10px]">
-                      Alur Keamanan Peserta:
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="w-5 h-5 rounded-full bg-purple-200 text-purple-900 font-bold text-[11px] flex items-center justify-center shrink-0">
-                        1
-                      </span>
-                      <span>
-                        Isi formulir pendaftaran &amp; <strong>unduh Kartu Pengenal QR</strong> ke HP
-                        Anda.
-                      </span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="w-5 h-5 rounded-full bg-purple-200 text-purple-900 font-bold text-[11px] flex items-center justify-center shrink-0">
-                        2
-                      </span>
-                      <span>Tunjukkan Kartu QR kepada panitia saat check-in kehadiran acara.</span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="w-5 h-5 rounded-full bg-purple-200 text-purple-900 font-bold text-[11px] flex items-center justify-center shrink-0">
-                        3
-                      </span>
-                      <span>
-                        Setelah acara selesai, <strong>unggah Kartu Pengenal / Foto / Barcode</strong>{' '}
-                        Anda pada tab ke-2 untuk klaim E-Sertifikat (tersimpan aman di Local Storage
-                        HP Anda).
-                      </span>
+                    <div className="flex flex-wrap items-center gap-2.5 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleStartEditRegistered(registeredParticipant)}
+                        className="flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold bg-[#FAF9F6] hover:bg-slate-100 text-slate-900 border border-slate-200/90 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5 text-slate-700" />
+                        <span>Edit Data Kartu &amp; Sertifikat</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setViewModeAfterReg('form')}
+                        className="py-2.5 px-4 rounded-xl text-xs font-medium bg-white hover:bg-slate-100 text-slate-600 border border-slate-200/90 transition-colors cursor-pointer"
+                      >
+                        Lihat Undangan &amp; Formulir
+                      </button>
                     </div>
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -2191,7 +3399,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
                       </h3>
                       <p className="text-xs text-amber-900/90 mt-0.5">
                         ID Presensi: <strong className="font-mono">{verifiedParticipant.id}</strong>{' '}
-                        · {verifiedParticipant.role || 'Peserta Workshop'} · {verifiedParticipant.institution}
+                        · {verifiedParticipant.role || 'Peserta Workshop'} · Domisili: {verifiedParticipant.institution}
                         {verifiedParticipant.phone ? ` · WA: ${verifiedParticipant.phone}` : ''}
                       </p>
                     </div>
@@ -2458,7 +3666,7 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
                               {verifiedParticipant.name}
                             </span>
                             <span className="text-purple-800 font-semibold block">
-                              {verifiedParticipant.role || 'Peserta Workshop'} · {verifiedParticipant.institution || '-'}
+                              {verifiedParticipant.role || 'Peserta Workshop'} · Domisili: {verifiedParticipant.institution || '-'}
                             </span>
                             {verifiedParticipant.phone && (
                               <span className="text-slate-500 font-mono text-[11px] block">
@@ -2636,8 +3844,14 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
               tautan ini <strong>hanya dapat mengakses formulir pendaftaran &amp; cek sertifikat</strong>.
             </p>
 
-            <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] font-mono text-slate-600 break-all text-left">
-              {shareRegistrationUrl}
+            <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 text-left space-y-1">
+              <div className="font-bold text-purple-950 flex items-center gap-1.5">
+                <Link2 className="w-3.5 h-3.5 text-purple-700" />
+                <span>Nama Link: {formTemplate.shareLinkSlug || 'HealYou-Pendaftaran'}</span>
+              </div>
+              <div className="text-[11px] font-mono text-slate-600 break-all">
+                {shareRegistrationUrl}
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -2649,12 +3863,12 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
                 {copiedPortalLink === 'register' ? (
                   <>
                     <Check className="w-4 h-4" />
-                    Tautan Disalin!
+                    Tersalin ({formTemplate.shareLinkSlug || 'HealYou-Pendaftaran'})!
                   </>
                 ) : (
                   <>
                     <Copy className="w-4 h-4" />
-                    Salin Link Pendaftaran
+                    Salin &ldquo;{formTemplate.shareLinkSlug || 'HealYou-Pendaftaran'}&rdquo;
                   </>
                 )}
               </button>
@@ -2678,6 +3892,201 @@ export const ParticipantPortalView: React.FC<ParticipantPortalViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal Verifikasi / Approval Pembayaran Peserta (Admin & Panitia) */}
+      {showAdminApprovalModal && (canVerifyPayment || isAdminPreview) && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setShowAdminApprovalModal(false)}
+        >
+          <div
+            className="bg-white rounded-3xl max-w-2xl w-full max-h-[88vh] flex flex-col shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 sm:px-6 border-b border-slate-200 flex items-center justify-between gap-3 bg-slate-900 text-white">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 block">
+                  Sistem Verifikasi / Approval Admin &amp; Panitia
+                </span>
+                <h4 className="text-base font-bold">
+                  Daftar Verifikasi Pembayaran &amp; Aktivasi Kartu QR Peserta
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdminApprovalModal(false)}
+                className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                {(
+                  [
+                    { id: 'ALL', label: `Semua (${participants.length})` },
+                    {
+                      id: 'PENDING',
+                      label: `Menunggu ACC (${participants.filter((p) => p.paymentVerified === false).length})`,
+                    },
+                    {
+                      id: 'VERIFIED',
+                      label: `Sudah Di-ACC (${participants.filter((p) => p.paymentVerified === true).length})`,
+                    },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setApprovalModalFilter(tab.id)}
+                    className={cn(
+                      'px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer',
+                      approvalModalFilter === tab.id
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-900 font-mono text-xs font-bold">
+                  Kuota ACC: {verifiedParticipantsCount}/{participantQuota} (Sisa {remainingQuota})
+                </span>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 p-4 sm:p-6 space-y-3">
+              {participants
+                .filter((p) => {
+                  if (approvalModalFilter === 'PENDING') return p.paymentVerified === false;
+                  if (approvalModalFilter === 'VERIFIED') return p.paymentVerified !== false;
+                  return true;
+                })
+                .map((p) => {
+                  const isVerified = p.paymentVerified !== false;
+                  return (
+                    <div
+                      key={p.id}
+                      className={cn(
+                        'p-4 rounded-2xl border flex flex-col gap-3',
+                        isVerified
+                          ? 'bg-white border-slate-200'
+                          : 'bg-amber-50/60 border-amber-300'
+                      )}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-sm text-slate-900">{p.name}</span>
+                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 text-purple-900">
+                              {p.id}
+                            </span>
+                            <span
+                              className={cn(
+                                'px-2 py-0.5 rounded-md text-[11px] font-bold',
+                                isVerified
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-amber-200/80 text-amber-950'
+                              )}
+                            >
+                              {isVerified
+                                ? `✓ Terverifikasi (${p.paymentVerifiedBy || 'Admin/Panitia'})`
+                                : '⏳ Menunggu ACC'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">
+                            {p.role || 'Peserta'} · {p.institution}
+                            {p.phone ? ` · WA: ${p.phone}` : ''}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          {!isVerified ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                verifyParticipantPayment(p.id, true);
+                                playScanBeep('success');
+                                setPaymentVerifyTick((t) => t + 1);
+                              }}
+                              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Terima (ACC)</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                verifyParticipantPayment(p.id, false);
+                                setPaymentVerifyTick((t) => t + 1);
+                              }}
+                              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 transition-colors cursor-pointer"
+                            >
+                              Batalkan ACC
+                            </button>
+                          )}
+
+                          <a
+                            href={buildSendApprovedCardLinkToParticipantWaUrl(p)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => {
+                              if (!isVerified) {
+                                verifyParticipantPayment(p.id, true);
+                                setPaymentVerifyTick((t) => t + 1);
+                              }
+                            }}
+                            className="px-3 py-2 rounded-xl text-xs font-bold bg-slate-900 hover:bg-purple-950 text-white transition-colors inline-flex items-center gap-1.5"
+                            title="ACC & Kirim Link Kartu QR yang Sudah Aktif ke WhatsApp Peserta"
+                          >
+                            <span>Kirim Link Kartu (WA)</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                      </div>
+
+                      {p.paymentProofUrl && (
+                        <div className="rounded-xl bg-slate-50 border border-slate-200 p-2.5 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <img
+                              src={p.paymentProofUrl}
+                              alt={`Bukti Transfer ${p.name}`}
+                              className="w-16 h-16 object-cover rounded-lg border border-slate-200 bg-white"
+                            />
+                            <div className="text-xs">
+                              <span className="font-semibold text-slate-800 block">
+                                Bukti Transfer Terlampir
+                              </span>
+                              <span className="text-slate-500 text-[11px]">
+                                {p.paymentFileName || 'Bukti_Transfer.jpg'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full Registration Form & Invitation Editor Modal (Admin Only) */}
+      {isFormEditorOpen && canManageParticipants && (
+        <RegistrationFormEditorModal
+          workshopId={activeWorkshopId}
+          initialTemplate={formTemplate}
+          portalShareUrl={shareRegistrationUrl}
+          onClose={() => setIsFormEditorOpen(false)}
+          onSaved={(updated) => setFormTemplate(updated)}
+          onCopyPortalLink={() => void handleCopyPortalUrl('register')}
+        />
       )}
     </div>
   );

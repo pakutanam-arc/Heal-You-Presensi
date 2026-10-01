@@ -12,6 +12,11 @@ import {
   normalizeCertificateSettings,
 } from './lib/certificateRenderer';
 import {
+  getParticipantPaymentRecord,
+  saveParticipantTransferSubmission,
+  setParticipantPaymentApproval,
+} from './lib/registrationTemplate';
+import {
   verifyScannedParticipantQr,
   extractBaseParticipantIdFromQr,
 } from './lib/qrSecurity';
@@ -162,6 +167,10 @@ interface AppState {
       institution: string;
       role?: string;
       phone?: string;
+      paymentVerified?: boolean;
+      paymentProofUrl?: string;
+      paymentFileName?: string;
+      paymentSubmittedAt?: string;
     },
     options?: { allowSelfRegister?: boolean }
   ) => Participant;
@@ -180,6 +189,11 @@ interface AppState {
     updates: Partial<Participant>,
     options?: { allowSelfUpdate?: boolean }
   ) => Participant | null;
+  verifyParticipantPayment: (
+    id: string,
+    verified: boolean,
+    proofUrl?: string
+  ) => Participant | null;
   deleteParticipant: (id: string) => void;
   updateConfig: (updates: Partial<WorkshopConfig>) => void;
   resetAttendance: () => void;
@@ -190,6 +204,7 @@ interface AppState {
   isAdmin: boolean;
   isPanitia: boolean;
   canManageParticipants: boolean;
+  canVerifyPayment: boolean;
   isCloudSyncing: boolean;
   loginWithCredentials: (
     identifier: string,
@@ -209,6 +224,60 @@ const migrateId = (id: string) =>
     .replace(/^PSY-/i, 'HY-')
     .replace(/[^a-zA-Z0-9_\-]/g, '-')
     .slice(0, 64) || 'HY-001';
+
+const LEGACY_INSTITUTION_TO_DOMICILE: Record<string, string> = {
+  'National Psych Institute': 'Depok, Jawa Barat',
+  'City Health Clinic': 'Jakarta Selatan',
+  'Memorial Hospital': 'Bogor, Jawa Barat',
+  'Wilson Psychological Services': 'Tangerang Selatan',
+  'Wellness Center': 'Bekasi, Jawa Barat',
+  'Universitas Indonesia': 'Depok, Jawa Barat',
+  'Klinik Mindful Jakarta': 'Jakarta Selatan',
+  'RSUPN Dr. Cipto Mangunkusumo': 'Jakarta Pusat',
+  'Universitas Gadjah Mada': 'Sleman, Yogyakarta',
+  'Pusat Konseling Harapan': 'Bogor, Jawa Barat',
+  'Universitas Airlangga': 'Surabaya, Jawa Timur',
+  'Biro Psikologi Lentera': 'Tangerang Selatan',
+  'Universitas Padjadjaran': 'Bandung, Jawa Barat',
+  'Sekolah Bintang Bangsa': 'Bekasi, Jawa Barat',
+  'Klinik Tumbuh Kembang Anak': 'Margonda, Depok',
+  'Universitas Brawijaya': 'Malang, Jawa Timur',
+  'Yayasan Pulih Bersama': 'Jakarta Timur',
+  'Peserta Umum': '-',
+};
+
+const migrateParticipantDomicile = (
+  p: Participant,
+  workshopId: string = DEFAULT_WORKSHOP_ID
+): Participant => {
+  const cleanInst = (p.institution || '').trim();
+  const mappedDomicile = LEGACY_INSTITUTION_TO_DOMICILE[cleanInst] || cleanInst || '-';
+  const cleanId = migrateId(p.id);
+  const paymentRec = getParticipantPaymentRecord(workshopId, cleanId, p.phone);
+
+  const resolvedVerified =
+    paymentRec !== null
+      ? paymentRec.verified === true
+      : Boolean(p.paymentVerifiedAt);
+
+  return {
+    ...p,
+    id: cleanId,
+    institution: mappedDomicile,
+    paymentVerified: resolvedVerified,
+    paymentProofUrl: paymentRec?.proofDataUrl || p.paymentProofUrl || undefined,
+    paymentFileName: paymentRec?.proofFileName || p.paymentFileName || undefined,
+    paymentSubmittedAt: paymentRec?.submittedAt || p.paymentSubmittedAt || undefined,
+    paymentVerifiedAt:
+      (paymentRec?.verified !== false ? paymentRec?.verifiedAt : undefined) ||
+      p.paymentVerifiedAt ||
+      undefined,
+    paymentVerifiedBy:
+      (paymentRec?.verified !== false ? paymentRec?.verifiedBy : undefined) ||
+      p.paymentVerifiedBy ||
+      undefined,
+  };
+};
 
 const clampStr = (val: string | undefined, max: number, fallback = ''): string => {
   const clean = (val ?? '').trim();
@@ -305,7 +374,11 @@ function loadInitialSessions(): Record<string, LocalSessionRecord> {
           hydrated[k] = {
             workshopId: val.workshopId || k,
             config: val.config || WORKSHOP_CONFIG,
-            participants: Array.isArray(val.participants) ? val.participants : INITIAL_PARTICIPANTS,
+            participants: Array.isArray(val.participants)
+              ? val.participants.map((p) => migrateParticipantDomicile(p, val.workshopId || k))
+              : INITIAL_PARTICIPANTS.map((p) =>
+                  migrateParticipantDomicile(p, val.workshopId || k)
+                ),
             certificateSettings: val.certificateSettings
               ? normalizeCertificateSettings(val.certificateSettings)
               : loadLegacyCertSettings(k),
@@ -328,7 +401,7 @@ function loadInitialSessions(): Record<string, LocalSessionRecord> {
   if (savedPart) {
     try {
       const parsed: Participant[] = JSON.parse(savedPart);
-      initialParticipants = parsed.map((p) => ({ ...p, id: migrateId(p.id) }));
+      initialParticipants = parsed.map((p) => migrateParticipantDomicile(p));
     } catch {
       initialParticipants = INITIAL_PARTICIPANTS;
     }
@@ -434,6 +507,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     authSession?.role === 'admin' && authSession.identifier.toLowerCase() === ADMIN_EMAIL;
   const isPanitia = authSession?.role === 'panitia';
   const canManageParticipants = isAdmin;
+  const canVerifyPayment = isAdmin || isPanitia;
 
   const participantsRef = useRef(participants);
   const configRef = useRef(config);
@@ -666,7 +740,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     settingsToSave: CertificateSettings,
     userObj: User | null = cloudUser
   ): Promise<boolean> => {
-    if (!userObj || userObj.email?.toLowerCase() !== ADMIN_EMAIL) return false;
+    const activeAuthUser = auth.currentUser || userObj;
+    if (
+      !activeAuthUser ||
+      !activeAuthUser.emailVerified ||
+      activeAuthUser.email?.toLowerCase() !== ADMIN_EMAIL
+    ) {
+      return false;
+    }
     const certDocRef = doc(
       db,
       'workshops',
@@ -675,7 +756,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       CERT_SETTINGS_DOC_ID
     );
     const certPath = `workshops/${targetWorkshopId}/certificateSettings/${CERT_SETTINGS_DOC_ID}`;
-    const payload = buildFirestoreCertPayload(settingsToSave, targetWorkshopId, userObj.uid);
+    const payload = buildFirestoreCertPayload(
+      settingsToSave,
+      targetWorkshopId,
+      activeAuthUser.uid
+    );
 
     setIsCertCloudSaving(true);
     try {
@@ -733,8 +818,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return;
       }
 
-      // Only allow paku.tanam@gmail.com to authenticate via Google Cloud
-      if (user.email?.toLowerCase() !== ADMIN_EMAIL) {
+      // Only allow verified paku.tanam@gmail.com to authenticate via Google Cloud
+      if (!user.emailVerified || user.email?.toLowerCase() !== ADMIN_EMAIL) {
         await signOutFromCloud();
         setCloudUser(null);
         setIsCloudReady(false);
@@ -764,12 +849,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       );
 
       try {
+        await user.getIdToken();
+        if (!auth.currentUser || auth.currentUser.uid !== uid) {
+          return;
+        }
+
         const snap = await getDoc(workshopDocRef);
+        if (!auth.currentUser || auth.currentUser.uid !== uid) {
+          return;
+        }
+
         if (!snap.exists()) {
           const curCfg = configRef.current;
-          const curCert = certificateSettingsRef.current;
-          const batch = writeBatch(db);
-          batch.set(workshopDocRef, {
+          // 1. Create parent workshop document first so exists(/workshops/{id}) is true for subcollections
+          await setDoc(workshopDocRef, {
             workshopId: curEventId,
             ownerId: uid,
             name: clampStr(curCfg.name, 200, WORKSHOP_CONFIG.name),
@@ -784,66 +877,84 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             updatedAt: serverTimestamp(),
           });
 
-          batch.set(certDocRef, {
-            ...buildFirestoreCertPayload(curCert, curEventId, uid),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
+          // 2. Upsert certificate settings safely
+          await upsertCertSettingsToFirestore(
+            curEventId,
+            certificateSettingsRef.current,
+            user
+          );
 
+          // 3. Seed initial participants if not already present
           for (const p of participantsRef.current) {
+            if (!auth.currentUser || auth.currentUser.uid !== uid) break;
             const safeId = migrateId(p.id);
             const pRef = doc(db, 'workshops', curEventId, 'participants', safeId);
-            batch.set(pRef, {
-              id: safeId,
+            const pSnap = await getDoc(pRef);
+            if (!pSnap.exists()) {
+              await setDoc(pRef, {
+                id: safeId,
+                workshopId: curEventId,
+                ownerId: uid,
+                name: clampStr(p.name, 160, 'Peserta'),
+                email: clampStr(p.email, 160, '-'),
+                institution: clampStr(p.institution, 160, '-'),
+                role: clampStr(p.role, 100, 'Peserta Workshop'),
+                phone: (p.phone ?? '').trim().slice(0, 60),
+                status: p.status,
+                checkInTime: (p.checkInTime ?? '').slice(0, 64),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+        } else {
+          const d = snap.data();
+          const hasAllRequiredFields =
+            typeof d.workshopId === 'string' &&
+            typeof d.ownerId === 'string' &&
+            typeof d.organizer === 'string' &&
+            typeof d.tagline === 'string' &&
+            typeof d.eventLabel === 'string' &&
+            typeof d.customLogoUrl === 'string' &&
+            Boolean(d.createdAt);
+
+          if (!hasAllRequiredFields && user.email?.toLowerCase() === ADMIN_EMAIL) {
+            await setDoc(workshopDocRef, {
               workshopId: curEventId,
               ownerId: uid,
-              name: clampStr(p.name, 160, 'Peserta'),
-              email: clampStr(p.email, 160, '-'),
-              institution: clampStr(p.institution, 160, '-'),
-              role: clampStr(p.role, 100, 'Peserta Workshop'),
-              phone: (p.phone ?? '').trim().slice(0, 60),
-              status: p.status,
-              checkInTime: (p.checkInTime ?? '').slice(0, 64),
-              createdAt: serverTimestamp(),
+              name: clampStr(d.name, 200, WORKSHOP_CONFIG.name),
+              date: clampStr(d.date, 40, WORKSHOP_CONFIG.date),
+              startTime: clampStr(d.startTime, 64, WORKSHOP_CONFIG.startTime),
+              location: clampStr(d.location, 200, WORKSHOP_CONFIG.location),
+              organizer: clampStr(d.organizer, 120, 'Muslimah Healing Journey'),
+              tagline: clampStr(d.tagline, 120, "Let's Heal"),
+              eventLabel: clampStr(d.eventLabel, 120, 'Agenda Workshop Psikologi'),
+              customLogoUrl: (d.customLogoUrl ?? '').slice(0, 350000),
+              createdAt: d.createdAt || serverTimestamp(),
               updatedAt: serverTimestamp(),
             });
           }
-          await batch.commit();
-        } else if (
-          !snap.data().workshopId &&
-          user.email?.toLowerCase() === ADMIN_EMAIL
-        ) {
-          const d = snap.data();
-          await updateDoc(workshopDocRef, {
-            workshopId: curEventId,
-            ownerId: uid,
-            name: clampStr(d.name, 200, WORKSHOP_CONFIG.name),
-            date: clampStr(d.date, 40, WORKSHOP_CONFIG.date),
-            startTime: clampStr(d.startTime, 64, WORKSHOP_CONFIG.startTime),
-            location: clampStr(d.location, 200, WORKSHOP_CONFIG.location),
-            organizer: clampStr(d.organizer, 120, 'Muslimah Healing Journey'),
-            tagline: clampStr(d.tagline, 120, "Let's Heal"),
-            eventLabel: clampStr(d.eventLabel, 120, 'Agenda Workshop Psikologi'),
-            customLogoUrl: (d.customLogoUrl ?? '').slice(0, 350000),
-            updatedAt: serverTimestamp(),
-          });
-        }
 
-        // Ensure certificateSettings/config exists for existing workshop if user is Admin
-        if (user.email?.toLowerCase() === ADMIN_EMAIL) {
-          const certSnap = await getDoc(certDocRef);
-          if (!certSnap.exists()) {
-            await setDoc(certDocRef, {
-              ...buildFirestoreCertPayload(certificateSettingsRef.current, curEventId, uid),
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
+          // Ensure certificateSettings/config exists for existing workshop if user is Admin
+          if (user.email?.toLowerCase() === ADMIN_EMAIL) {
+            const certSnap = await getDoc(certDocRef);
+            if (!certSnap.exists()) {
+              await upsertCertSettingsToFirestore(
+                curEventId,
+                certificateSettingsRef.current,
+                user
+              );
+            }
           }
         }
 
-        setIsCloudReady(true);
+        if (auth.currentUser && auth.currentUser.uid === uid) {
+          setIsCloudReady(true);
+        }
       } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, `workshops/${curEventId}`);
+        if (auth.currentUser && auth.currentUser.uid === uid) {
+          handleFirestoreError(error, OperationType.WRITE, `workshops/${curEventId}`);
+        }
       } finally {
         setIsCloudSyncing(false);
       }
@@ -932,18 +1043,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const unsubParticipants = onSnapshot(
       qParticipants,
       (querySnap) => {
+        const prevMap = new Map<string, Participant>();
+        participantsRef.current.forEach((existingP) => {
+          prevMap.set(existingP.id.toUpperCase(), existingP);
+        });
         const list: Participant[] = querySnap.docs.map((d) => {
           const item = d.data();
-          return {
-            id: item.id,
-            name: item.name,
-            email: item.email,
-            institution: item.institution,
-            role: item.role || 'Peserta Workshop',
-            phone: item.phone || '',
-            status: item.status,
-            checkInTime: item.checkInTime ? item.checkInTime : undefined,
-          };
+          const prevP = prevMap.get(String(item.id || d.id).toUpperCase());
+          return migrateParticipantDomicile(
+            {
+              id: item.id,
+              name: item.name,
+              email: item.email,
+              institution: item.institution,
+              role: item.role || 'Peserta Workshop',
+              phone: item.phone || '',
+              status: item.status,
+              checkInTime: item.checkInTime ? item.checkInTime : undefined,
+              paymentVerified: prevP?.paymentVerified,
+              paymentProofUrl: prevP?.paymentProofUrl,
+              paymentFileName: prevP?.paymentFileName,
+              paymentSubmittedAt: prevP?.paymentSubmittedAt,
+              paymentVerifiedAt: prevP?.paymentVerifiedAt,
+              paymentVerifiedBy: prevP?.paymentVerifiedBy,
+            },
+            currentEventId
+          );
         });
         list.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
         setParticipants(list);
@@ -1073,17 +1198,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       [safePid]: record,
     }));
 
-    if (cloudUser) {
+    const activeUser = auth.currentUser;
+    if (
+      cloudUser &&
+      activeUser &&
+      activeUser.emailVerified &&
+      activeUser.email?.toLowerCase() === ADMIN_EMAIL
+    ) {
       const curEventId = activeWorkshopIdRef.current;
       const fRef = doc(db, 'workshops', curEventId, 'feedbacks', safePid);
       const fPath = `workshops/${curEventId}/feedbacks/${safePid}`;
+      const uid = activeUser.uid;
       void (async () => {
         try {
           const snap = await getDoc(fRef);
           const payload = {
             feedbackId: safePid,
             workshopId: curEventId,
-            ownerId: cloudUser.uid,
+            ownerId: uid,
             participantId: safePid,
             participantName: record.participantName,
             institution: record.institution,
@@ -1267,8 +1399,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return updated;
     });
 
-    if (cloudUser && isAdmin) {
-      const uid = cloudUser.uid;
+    const activeUser = auth.currentUser;
+    if (
+      cloudUser &&
+      isAdmin &&
+      activeUser &&
+      activeUser.emailVerified &&
+      activeUser.email?.toLowerCase() === ADMIN_EMAIL
+    ) {
+      const uid = activeUser.uid;
       try {
         const batch = writeBatch(db);
         const wRef = doc(db, 'workshops', newWorkshopId);
@@ -1360,7 +1499,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return copy;
     });
 
-    if (cloudUser && isAdmin) {
+    const activeUser = auth.currentUser;
+    if (
+      cloudUser &&
+      isAdmin &&
+      activeUser &&
+      activeUser.emailVerified &&
+      activeUser.email?.toLowerCase() === ADMIN_EMAIL
+    ) {
       try {
         const pQuery = query(
           collection(db, 'workshops', workshopIdToDelete, 'participants'),
@@ -1390,7 +1536,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const syncParticipantUpdateToCloud = async (id: string, updates: Record<string, unknown>) => {
-    if (!cloudUser) return;
+    const activeUser = auth.currentUser;
+    if (
+      !cloudUser ||
+      !activeUser ||
+      !activeUser.emailVerified ||
+      activeUser.email?.toLowerCase() !== ADMIN_EMAIL
+    ) {
+      return;
+    }
     const curEventId = activeWorkshopIdRef.current;
     const safeId = migrateId(id);
     const pPath = `workshops/${curEventId}/participants/${safeId}`;
@@ -1405,9 +1559,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const syncNewParticipantToCloud = async (p: Participant, allowSelfRegister = false) => {
-    if (!cloudUser) return;
+    const activeUser = auth.currentUser;
+    if (
+      !cloudUser ||
+      !activeUser ||
+      !activeUser.emailVerified ||
+      activeUser.email?.toLowerCase() !== ADMIN_EMAIL
+    ) {
+      return;
+    }
     if (!isAdmin && !allowSelfRegister) return;
-    const uid = cloudUser.uid;
+    const uid = activeUser.uid;
     const curEventId = activeWorkshopIdRef.current;
     const safeId = migrateId(p.id);
     const pPath = `workshops/${curEventId}/participants/${safeId}`;
@@ -1460,6 +1622,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const participant = participants[participantIndex];
 
+    if (participant.paymentVerified === false) {
+      return {
+        success: false,
+        message: `Pembayaran ${participant.name} (${participant.id}) belum diverifikasi (Menunggu Approval Admin/Panitia). Silakan ACC pembayaran terlebih dahulu.`,
+        participant,
+      };
+    }
+
     if (participant.status !== 'PENDING') {
       return {
         success: false,
@@ -1503,6 +1673,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       institution: string;
       role?: string;
       phone?: string;
+      paymentVerified?: boolean;
+      paymentProofUrl?: string;
+      paymentFileName?: string;
+      paymentSubmittedAt?: string;
     },
     options?: { allowSelfRegister?: boolean }
   ): Participant => {
@@ -1516,6 +1690,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       existingNums.length > 0 ? Math.max(...existingNums) + 1 : participants.length + 1;
     const autoId = `HY-${String(nextNum).padStart(3, '0')}`;
     const newId = data.id?.trim() ? migrateId(data.id.trim().toUpperCase()) : autoId;
+    const curEvtId = activeWorkshopIdRef.current;
+    const nowIso = new Date().toISOString();
+
+    const isVerified =
+      typeof data.paymentVerified === 'boolean'
+        ? data.paymentVerified
+        : options?.allowSelfRegister
+          ? false
+          : true;
+
+    const verifierName = isVerified
+      ? authSession?.displayName || (isAdmin ? 'Admin Utama' : 'Admin / Panitia')
+      : undefined;
+
+    if (options?.allowSelfRegister && !isVerified) {
+      saveParticipantTransferSubmission(curEvtId, {
+        participantId: newId,
+        phone: data.phone,
+        proofDataUrl: data.paymentProofUrl,
+        proofFileName: data.paymentFileName,
+      });
+    } else if (isVerified) {
+      setParticipantPaymentApproval(curEvtId, {
+        participantId: newId,
+        phone: data.phone,
+        verified: true,
+        verifiedBy: verifierName,
+        proofDataUrl: data.paymentProofUrl,
+        proofFileName: data.paymentFileName,
+      });
+    }
 
     const newParticipant: Participant = {
       id: newId,
@@ -1525,6 +1730,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       role: clampStr(data.role, 100, 'Peserta Workshop'),
       phone: (data.phone ?? '').trim().slice(0, 60),
       status: 'PENDING',
+      paymentVerified: isVerified,
+      paymentProofUrl: data.paymentProofUrl || undefined,
+      paymentFileName: data.paymentFileName || undefined,
+      paymentSubmittedAt: data.paymentSubmittedAt || nowIso,
+      paymentVerifiedAt: isVerified ? nowIso : undefined,
+      paymentVerifiedBy: verifierName,
     };
 
     if (!canManageParticipants && !options?.allowSelfRegister) {
@@ -1614,24 +1825,79 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const isStatusOnlyUpdate = Object.keys(updates).every(
       (k) => k === 'status' || k === 'checkInTime'
     );
+    const isPaymentOnlyUpdate = Object.keys(updates).every(
+      (k) =>
+        k === 'paymentVerified' ||
+        k === 'paymentProofUrl' ||
+        k === 'paymentFileName' ||
+        k === 'paymentSubmittedAt' ||
+        k === 'paymentVerifiedAt' ||
+        k === 'paymentVerifiedBy'
+    );
 
-    if (!canManageParticipants && !isStatusOnlyUpdate && !options?.allowSelfUpdate) {
+    if (
+      !canManageParticipants &&
+      !isStatusOnlyUpdate &&
+      !(canVerifyPayment && isPaymentOnlyUpdate) &&
+      !options?.allowSelfUpdate
+    ) {
       return current;
     }
 
-    const merged: Participant = { ...current, ...updates };
+    const curEventId = activeWorkshopIdRef.current;
+    const nowIso = new Date().toISOString();
+    const verifierLabel =
+      authSession?.displayName || (isAdmin ? 'Admin Utama' : isPanitia ? 'Panitia' : 'Admin');
+
+    const nextPaymentVerified =
+      typeof updates.paymentVerified === 'boolean'
+        ? updates.paymentVerified
+        : current.paymentVerified;
+
+    const merged: Participant = {
+      ...current,
+      ...updates,
+      paymentVerified: nextPaymentVerified,
+      paymentVerifiedAt:
+        typeof updates.paymentVerified === 'boolean'
+          ? updates.paymentVerified
+            ? updates.paymentVerifiedAt || nowIso
+            : undefined
+          : current.paymentVerifiedAt,
+      paymentVerifiedBy:
+        typeof updates.paymentVerified === 'boolean'
+          ? updates.paymentVerified
+            ? updates.paymentVerifiedBy || verifierLabel
+            : undefined
+          : current.paymentVerifiedBy,
+    };
+
+    if (
+      typeof updates.paymentVerified === 'boolean' ||
+      updates.paymentProofUrl !== undefined ||
+      updates.paymentFileName !== undefined
+    ) {
+      setParticipantPaymentApproval(curEventId, {
+        participantId: merged.id,
+        phone: merged.phone,
+        verified: Boolean(merged.paymentVerified),
+        verifiedBy: merged.paymentVerifiedBy,
+        proofDataUrl: merged.paymentProofUrl,
+        proofFileName: merged.paymentFileName,
+      });
+    }
+
     setParticipants((prev) =>
       prev.map((p) => (p.id.toUpperCase() === id.toUpperCase() ? merged : p))
     );
 
     if (cloudUser) {
-      const curEventId = activeWorkshopIdRef.current;
       if (isStatusOnlyUpdate) {
         void syncParticipantUpdateToCloud(current.id, {
           status: merged.status,
           checkInTime: (merged.checkInTime ?? '').slice(0, 64),
         });
-      } else if (isAdmin) {
+      } else if (isAdmin && !isPaymentOnlyUpdate) {
         if (updates.id && updates.id !== current.id) {
           void deleteDoc(
             doc(db, 'workshops', curEventId, 'participants', migrateId(current.id))
@@ -1661,6 +1927,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return merged;
   };
 
+  const verifyParticipantPayment = (
+    id: string,
+    verified: boolean,
+    proofUrl?: string
+  ): Participant | null => {
+    if (!canVerifyPayment) return null;
+    const verifierLabel =
+      authSession?.displayName || (isAdmin ? 'Admin Utama' : isPanitia ? 'Panitia' : 'Admin');
+    return updateParticipant(id, {
+      paymentVerified: verified,
+      paymentVerifiedAt: verified ? new Date().toISOString() : undefined,
+      paymentVerifiedBy: verified ? verifierLabel : undefined,
+      ...(proofUrl ? { paymentProofUrl: proofUrl } : {}),
+    });
+  };
+
   const deleteParticipant = (id: string) => {
     if (!canManageParticipants) return;
     setParticipants((prev) => prev.filter((p) => p.id !== id));
@@ -1682,21 +1964,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const merged: WorkshopConfig = { ...config, ...updates };
     setConfig(merged);
 
-    if (cloudUser && isAdmin) {
+    if (
+      cloudUser &&
+      isAdmin &&
+      auth.currentUser &&
+      auth.currentUser.email?.toLowerCase() === ADMIN_EMAIL
+    ) {
       const curEventId = activeWorkshopIdRef.current;
       const wPath = `workshops/${curEventId}`;
-      void updateDoc(doc(db, 'workshops', curEventId), {
-        ownerId: cloudUser.uid,
-        name: clampStr(merged.name, 200, WORKSHOP_CONFIG.name),
-        date: clampStr(merged.date, 40, WORKSHOP_CONFIG.date),
-        startTime: clampStr(merged.startTime, 64, WORKSHOP_CONFIG.startTime),
-        location: clampStr(merged.location, 200, WORKSHOP_CONFIG.location),
-        organizer: clampStr(merged.organizer, 120, 'Muslimah Healing Journey'),
-        tagline: clampStr(merged.tagline, 120, "Let's Heal"),
-        eventLabel: clampStr(merged.eventLabel, 120, 'Agenda Workshop Psikologi'),
-        customLogoUrl: (merged.customLogoUrl ?? '').slice(0, 350000),
-        updatedAt: serverTimestamp(),
-      }).catch((e) => handleFirestoreError(e, OperationType.UPDATE, wPath));
+      const wRef = doc(db, 'workshops', curEventId);
+      const uid = auth.currentUser.uid;
+      void (async () => {
+        try {
+          const snap = await getDoc(wRef);
+          await setDoc(wRef, {
+            workshopId: curEventId,
+            ownerId: uid,
+            name: clampStr(merged.name, 200, WORKSHOP_CONFIG.name),
+            date: clampStr(merged.date, 40, WORKSHOP_CONFIG.date),
+            startTime: clampStr(merged.startTime, 64, WORKSHOP_CONFIG.startTime),
+            location: clampStr(merged.location, 200, WORKSHOP_CONFIG.location),
+            organizer: clampStr(merged.organizer, 120, 'Muslimah Healing Journey'),
+            tagline: clampStr(merged.tagline, 120, "Let's Heal"),
+            eventLabel: clampStr(merged.eventLabel, 120, 'Agenda Workshop Psikologi'),
+            customLogoUrl: (merged.customLogoUrl ?? '').slice(0, 350000),
+            createdAt: snap.exists() && snap.data().createdAt ? snap.data().createdAt : serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.UPDATE, wPath);
+        }
+      })();
     }
   };
 
@@ -1728,11 +2026,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCertificateSettings({ ...DEFAULT_CERT_SETTINGS });
     setFeedbacks({});
 
-    if (cloudUser && isAdmin) {
+    if (
+      cloudUser &&
+      isAdmin &&
+      auth.currentUser &&
+      auth.currentUser.email?.toLowerCase() === ADMIN_EMAIL
+    ) {
+      const uid = auth.currentUser.uid;
       void (async () => {
         try {
-          await updateDoc(doc(db, 'workshops', curEventId), {
-            ownerId: cloudUser.uid,
+          const wRef = doc(db, 'workshops', curEventId);
+          const snap = await getDoc(wRef);
+          await setDoc(wRef, {
+            workshopId: curEventId,
+            ownerId: uid,
             name: WORKSHOP_CONFIG.name,
             date: WORKSHOP_CONFIG.date,
             startTime: WORKSHOP_CONFIG.startTime,
@@ -1741,12 +2048,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             tagline: WORKSHOP_CONFIG.tagline || "Let's Heal",
             eventLabel: WORKSHOP_CONFIG.eventLabel || 'Agenda Workshop Psikologi',
             customLogoUrl: '',
+            createdAt: snap.exists() && snap.data().createdAt ? snap.data().createdAt : serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
           await upsertCertSettingsToFirestore(
             curEventId,
             { ...DEFAULT_CERT_SETTINGS },
-            cloudUser
+            auth.currentUser
           );
           for (const p of INITIAL_PARTICIPANTS) {
             await syncNewParticipantToCloud(p);
@@ -1786,7 +2094,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (cleanPass !== PANITIA_PASSWORD) {
         return {
           success: false,
-          message: `Password untuk ${matchedPanitia.displayName} salah. Gunakan password resmi panitia.`,
+          message: 'Kata sandi yang Anda masukkan tidak sesuai. Silakan periksa kembali.',
         };
       }
       if (auth.currentUser) {
@@ -1812,7 +2120,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return {
       success: false,
       message:
-        'Akses Ditolak: Akun tidak terdaftar. Hanya Admin (paku.tanam@gmail.com) dan Panitia 1–3 yang diizinkan mengakses web ini.',
+        'Akses ditolak. Email/username atau kata sandi tidak terdaftar dalam sistem manajemen.',
     };
   };
 
@@ -1826,27 +2134,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setIsCloudSyncing(false);
         return {
           success: false,
-          message: `Akses Ditolak: Akun Google (${email || 'tidak dikenal'}) tidak memiliki izin. Hanya ${ADMIN_EMAIL} yang dapat login melalui Google.`,
+          message:
+            'Akses ditolak. Akun Google yang dipilih tidak memiliki hak akses Administrator pada sistem ini.',
         };
       }
       const session: AuthenticatedUserSession = {
         role: 'admin',
         identifier: ADMIN_EMAIL,
-        displayName: user?.displayName || `Admin (${ADMIN_EMAIL})`,
+        displayName: user?.displayName || 'Administrator Utama',
         loggedInAt: new Date().toISOString(),
       };
       persistAuthSession(session);
       return {
         success: true,
-        message: 'Berhasil login sebagai Admin Utama dengan sinkronisasi Google Cloud.',
+        message: 'Berhasil masuk sebagai Administrator Utama.',
       };
     } catch (error) {
       setIsCloudSyncing(false);
       console.error('Google Sign-in failed:', error);
       return {
         success: false,
-        message:
-          'Pop-up login Google dibatalkan atau gagal. Anda juga dapat langsung memilih tombol Admin pada form di atas.',
+        message: 'Otentikasi Google dibatalkan atau tidak dapat diselesaikan.',
       };
     }
   };
@@ -1907,6 +2215,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         registerParticipant,
         importParticipants,
         updateParticipant,
+        verifyParticipantPayment,
         deleteParticipant,
         updateConfig,
         resetAttendance,
@@ -1917,6 +2226,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isAdmin,
         isPanitia,
         canManageParticipants,
+        canVerifyPayment,
         isCloudSyncing,
         loginWithCredentials,
         loginWithGoogleAdmin,

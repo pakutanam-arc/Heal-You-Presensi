@@ -49,6 +49,12 @@ export interface Participant {
   phone?: string;
   status: AttendanceStatus;
   checkInTime?: string;
+  paymentVerified?: boolean;
+  paymentProofUrl?: string;
+  paymentFileName?: string;
+  paymentSubmittedAt?: string;
+  paymentVerifiedAt?: string;
+  paymentVerifiedBy?: string;
 }
 
 export interface WorkshopConfig {
@@ -61,4 +67,5 @@ export interface WorkshopConfig {
   location: string;
   startTime: string; // ISO string
   customLogoUrl?: string;
+  quota?: number;
 }

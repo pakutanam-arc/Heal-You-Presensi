@@ -528,7 +528,7 @@ service cloud.firestore {
           && isValidCertificateSettings(incoming())
           && incoming().settingsId == existing().settingsId
           && incoming().workshopId == existing().workshopId
-          && incoming().createdAt == existing().createdAt
+          && (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time)
           && incoming().updatedAt == request.time
           && exists(/databases/$(database)/documents/workshops/$(workshopId))
           && incoming().diff(existing()).affectedKeys().hasOnly([
@@ -552,6 +552,7 @@ service cloud.firestore {
             'signer2SignatureText',
             'signer2SignatureDataUrl',
             'customTemplateDataUrl',
+            'createdAt',
             'updatedAt'
           ]);
 

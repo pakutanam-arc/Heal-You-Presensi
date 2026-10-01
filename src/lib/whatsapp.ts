@@ -1,6 +1,10 @@
 import { format } from 'date-fns';
 import { Participant, WorkshopConfig } from '../types';
 import { loadLogoImage } from '../components/HealYouLogo';
+import {
+  loadRegistrationTemplate,
+  encodeTemplateDiffForUrl,
+} from './registrationTemplate';
 
 export function normalizeWhatsAppPhone(phone?: string): string {
   if (!phone) return '';
@@ -101,21 +105,48 @@ export function buildParticipantPortalUrl(
     typeof window !== 'undefined'
       ? `${window.location.origin}${window.location.pathname}`
       : '';
-  const params = new URLSearchParams({
-    portal: 'peserta',
-    evt: workshopId || 'main',
-    event: config.name,
-    label: config.eventLabel || 'Agenda Workshop Psikologi',
-    date: config.date,
-    time: formatSafeTimeStr(config.startTime),
-    loc: config.location,
-    org: config.organizer || 'Muslimah Healing Journey',
-    tag: config.tagline || "Let's Heal",
-  });
-  if (initialTab === 'certificate') {
-    params.set('tab', 'certificate');
+  const template = loadRegistrationTemplate(workshopId || 'main');
+  const slug = (template.shareLinkSlug || 'HealYou-Pendaftaran').trim().replace(/\s+/g, '-');
+  const ftDiff = encodeTemplateDiffForUrl(template);
+
+  const queryParts: string[] = [encodeURIComponent(slug)];
+  if (workshopId && workshopId !== 'main') {
+    queryParts.push(`evt=${encodeURIComponent(workshopId)}`);
   }
-  return `${baseUrl}?${params.toString()}`;
+  if (initialTab === 'certificate') {
+    queryParts.push('tab=certificate');
+  }
+  if (ftDiff) {
+    queryParts.push(`ft=${encodeURIComponent(ftDiff)}`);
+  }
+
+  return `${baseUrl}?${queryParts.join('&')}`;
+}
+
+export async function copyPortalLinkWithTitle(
+  url: string,
+  linkTitle = 'HealYou-Pendaftaran'
+): Promise<void> {
+  if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+  try {
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+      const htmlBlob = new Blob(
+        [`<a href="${url}">${linkTitle}</a>`],
+        { type: 'text/html' }
+      );
+      const textBlob = new Blob([url], { type: 'text/plain' });
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': htmlBlob,
+          'text/plain': textBlob,
+        }),
+      ]);
+      return;
+    }
+  } catch {
+    // Fallback to writeText below
+  }
+  await navigator.clipboard.writeText(url);
 }
 
 export function parseParticipantPortalFromUrl(): {
@@ -126,19 +157,37 @@ export function parseParticipantPortalFromUrl(): {
   if (typeof window === 'undefined') return null;
   const params = new URLSearchParams(window.location.search);
   const portal = params.get('portal');
-  if (portal !== 'peserta' && portal !== 'participant') return null;
+  const rawSearch = window.location.search.toLowerCase();
+  const rawPath = window.location.pathname.toLowerCase();
+  const rawHash = window.location.hash.toLowerCase();
+
+  const savedTemplate = loadRegistrationTemplate(params.get('evt') || 'main');
+  const customSlugLower = (savedTemplate.shareLinkSlug || 'HealYou-Pendaftaran').toLowerCase();
+
+  const isHealYouPendaftaranUrl =
+    portal === 'peserta' ||
+    portal === 'participant' ||
+    portal?.toLowerCase() === 'healyou-pendaftaran' ||
+    params.has('HealYou-Pendaftaran') ||
+    params.has('healyou-pendaftaran') ||
+    rawSearch.includes('healyou-pendaftaran') ||
+    rawSearch.includes(encodeURIComponent(customSlugLower)) ||
+    rawPath.includes('healyou-pendaftaran') ||
+    rawHash.includes('healyou-pendaftaran');
+
+  if (!isHealYouPendaftaranUrl) return null;
 
   const workshopId = params.get('evt') || 'main';
-  const date = params.get('date') || format(new Date(), 'yyyy-MM-dd');
-  const time = params.get('time') || '08:00';
+  const date = params.get('date') || '2026-10-10';
+  const time = params.get('time') || '13:00';
   const tabParam = params.get('tab');
 
   const configFallback: WorkshopConfig = {
-    name: params.get('event') || 'Self Healing & Mindfulness Workshop',
+    name: params.get('event') || 'Muslimah Healing Day: Self Healing & Mindfulness Workshop',
     eventLabel: params.get('label') || 'Agenda Workshop Psikologi',
     date,
     startTime: `${date}T${time}:00`,
-    location: params.get('loc') || 'Auditorium Psikologi, Gedung B Lt. 3',
+    location: params.get('loc') || 'J Chicken Tole, Depok',
     organizer: params.get('org') || 'Muslimah Healing Journey',
     tagline: params.get('tag') || "Let's Heal",
   };
@@ -166,8 +215,8 @@ export function buildWhatsAppMessage(participant: Participant, config: WorkshopC
     ``,
     `*Detail Presensi Peserta:*`,
     `• No. Presensi: *${participant.id}*`,
-    `• Peran: ${role}`,
-    `• Institusi: ${participant.institution}`,
+    `• Pekerjaan / Kegiatan: ${role}`,
+    `• Tempat Tinggal / Domisili: ${participant.institution}`,
     `• Tanggal: ${dateFormatted}`,
     `• Jam Mulai: Pukul ${timeFormatted} WIB`,
     `• Lokasi: ${config.location}`,
@@ -282,7 +331,13 @@ export async function renderParticipantCardCanvas(
   const displayLocation = config.location;
   const displayParticipantRole = participant.role || 'Peserta Workshop';
   const displayParticipantName = participant.name;
-  const displayParticipantInst = participant.institution || '-';
+  const rawDomicile = (participant.institution || '').trim();
+  const displayParticipantInst =
+    rawDomicile && rawDomicile !== '-'
+      ? rawDomicile.toLowerCase().startsWith('domisili:') || rawDomicile.startsWith('📍')
+        ? rawDomicile
+        : `📍 ${rawDomicile}`
+      : '-';
   const cleanEmailForCard =
     participant.email &&
     participant.email !== '-' &&

@@ -394,10 +394,10 @@ export const CertificateVerificationPanel: React.FC<CertificateVerificationPanel
 
                       <div className="p-2.5 rounded-xl bg-white border border-slate-200/70">
                         <span className="text-[11px] text-slate-500 block">
-                          Peran &amp; Institusi / Asal
+                          Pekerjaan / Kegiatan &amp; Tempat Tinggal / Domisili
                         </span>
                         <p className="text-xs font-semibold text-slate-800 mt-0.5">
-                          {liveParticipant.role || 'Peserta Workshop'} ·{' '}
+                          {liveParticipant.role || 'Peserta Workshop'} · 📍{' '}
                           {liveParticipant.institution}
                         </p>
                       </div>

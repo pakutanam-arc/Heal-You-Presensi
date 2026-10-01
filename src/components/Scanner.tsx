@@ -49,7 +49,13 @@ export const Scanner: React.FC<ScannerProps> = ({
   onScannerPurposeChange,
   onVerifyCertificate,
 }) => {
-  const { checkIn, participants, certificateSettings } = useAppContext();
+  const {
+    checkIn,
+    participants,
+    certificateSettings,
+    canVerifyPayment,
+    verifyParticipantPayment,
+  } = useAppContext();
   const rawId = useId();
   const readerElementId = `qr-reader-${rawId.replace(/:/g, '')}`;
 
@@ -838,14 +844,34 @@ export const Scanner: React.FC<ScannerProps> = ({
                           certificateSettings.numberSuffix
                         )}
                       </p>
-                      <button
-                        type="button"
-                        onClick={() => handleDecodedInput(scanResult.participant!.id, true)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/90 hover:bg-white text-[#4c3575] border border-purple-200 text-[11px] font-semibold transition-colors cursor-pointer"
-                      >
-                        <Award className="w-3.5 h-3.5 text-amber-600" />
-                        <span>Buka E-Sertifikat Terhubung</span>
-                      </button>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {!scanResult.success &&
+                          scanResult.participant.paymentVerified === false &&
+                          canVerifyPayment && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const pid = scanResult.participant!.id;
+                                verifyParticipantPayment(pid, true);
+                                window.setTimeout(() => {
+                                  handleDecodedInput(pid, false);
+                                }, 50);
+                              }}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-colors cursor-pointer shadow-2xs"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>ACC Pembayaran &amp; Check-in Sekarang</span>
+                            </button>
+                          )}
+                        <button
+                          type="button"
+                          onClick={() => handleDecodedInput(scanResult.participant!.id, true)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/90 hover:bg-white text-[#4c3575] border border-purple-200 text-[11px] font-semibold transition-colors cursor-pointer"
+                        >
+                          <Award className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Buka E-Sertifikat Terhubung</span>
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

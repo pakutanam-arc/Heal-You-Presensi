@@ -375,361 +375,329 @@ function AppContent() {
         <>
           {/* Header */}
           <header className="bg-white border-b border-purple-100 sticky top-0 z-30">
-        <div className="w-full max-w-[1680px] mx-auto px-3 sm:px-6 lg:px-8 min-h-16 py-2 flex flex-wrap xl:flex-nowrap items-center justify-between gap-2 sm:gap-3">
-          {/* Left: Brand + Desktop Navigation */}
-          <div className="flex items-center gap-3 xl:gap-6 min-w-0">
-            <div className="flex items-center gap-2 shrink-0">
-              <HealYouLogo
-                customLogoUrl={config.customLogoUrl}
-                size={36}
-                className="rounded-lg shadow-2xs shrink-0"
-              />
-              <div className="min-w-0">
-                <h1
-                  className="text-lg sm:text-xl font-bold text-slate-900 leading-none truncate"
-                  style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
-                >
-                  Heal You
-                </h1>
-                <p className="text-[10px] sm:text-[11px] text-[#5e438f] font-medium mt-0.5 truncate">
-                  Workshop Presensi
-                </p>
-              </div>
-            </div>
+            <div className="w-full max-w-[1680px] mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+              {/* Left: Brand + Desktop Navigation */}
+              <div className="flex items-center gap-3 xl:gap-5 min-w-0">
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <HealYouLogo
+                    customLogoUrl={config.customLogoUrl}
+                    size={36}
+                    className="rounded-lg shadow-2xs shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <h1
+                      className="text-lg sm:text-xl font-bold text-slate-900 leading-none truncate"
+                      style={{ fontFamily: '"Cormorant Garamond", Georgia, serif' }}
+                    >
+                      Heal You
+                    </h1>
+                    <p className="text-[10px] sm:text-[11px] text-[#5e438f] font-medium mt-0.5 truncate">
+                      Workshop Presensi
+                    </p>
+                  </div>
+                </div>
 
-            {/* Desktop Navigation */}
-            <nav className="hidden lg:flex items-center gap-1 p-1 bg-purple-50/70 border border-purple-100 rounded-xl shrink-0">
-              <button
-                type="button"
-                onClick={() => setActiveTab('dashboard')}
-                className={cn(
-                  'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
-                  activeTab === 'dashboard'
-                    ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
-                    : 'text-slate-600 hover:text-slate-900'
-                )}
-              >
-                <LayoutDashboard className="w-4 h-4 text-[#5e438f]" />
-                Dashboard
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('scanner')}
-                className={cn(
-                  'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
-                  activeTab === 'scanner'
-                    ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
-                    : 'text-slate-600 hover:text-slate-900'
-                )}
-              >
-                <CameraIcon />
-                Scanner QR
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('welcome')}
-                className={cn(
-                  'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
-                  activeTab === 'welcome'
-                    ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
-                    : 'text-slate-600 hover:text-slate-900'
-                )}
-                title="Mode Layar Sambutan Penuh untuk TV / Proyektor"
-              >
-                <Tv className="w-4 h-4 text-[#5e438f]" />
-                Layar TV
-              </button>
-              {canManageParticipants && (
-                <>
+                {/* Desktop Navigation */}
+                <nav className="hidden lg:flex items-center gap-1 p-1 bg-purple-50/70 border border-purple-100 rounded-xl shrink-0">
                   <button
                     type="button"
-                    onClick={() => setActiveTab('registration')}
+                    onClick={() => setActiveTab('dashboard')}
                     className={cn(
-                      'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
-                      activeTab === 'registration'
+                      'flex items-center gap-1.5 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap',
+                      activeTab === 'dashboard'
                         ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
                         : 'text-slate-600 hover:text-slate-900'
                     )}
                   >
-                    <UserPlus className="w-4 h-4 text-[#5e438f]" />
-                    Kartu Pengenal &amp; Buat QR
+                    <LayoutDashboard className="w-4 h-4 text-[#5e438f] shrink-0" />
+                    <span>Dashboard</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => setAdminPortalPreview('register')}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs xl:text-sm font-semibold rounded-lg text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 transition-colors cursor-pointer"
-                    title="Buka Halaman Pendaftaran Mandiri & Klaim Sertifikat Khusus Peserta"
+                    onClick={() => setActiveTab('scanner')}
+                    className={cn(
+                      'flex items-center gap-1.5 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap',
+                      activeTab === 'scanner'
+                        ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    )}
                   >
-                    <Share2 className="w-3.5 h-3.5 text-emerald-700" />
-                    Portal Peserta
+                    <CameraIcon />
+                    <span>Scanner QR</span>
                   </button>
-                </>
-              )}
-            </nav>
-          </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('welcome')}
+                    className={cn(
+                      'flex items-center gap-1.5 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap',
+                      activeTab === 'welcome'
+                        ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    )}
+                    title="Mode Layar Sambutan Penuh untuk TV / Proyektor"
+                  >
+                    <Tv className="w-4 h-4 text-[#5e438f] shrink-0" />
+                    <span>Layar TV</span>
+                  </button>
+                  {canManageParticipants && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('registration')}
+                        className={cn(
+                          'flex items-center gap-1.5 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap',
+                          activeTab === 'registration'
+                            ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        )}
+                      >
+                        <UserPlus className="w-4 h-4 text-[#5e438f] shrink-0" />
+                        <span>Pendaftaran &amp; Kartu</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminPortalPreview('register')}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs xl:text-sm font-semibold rounded-lg text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 transition-colors cursor-pointer whitespace-nowrap"
+                        title="Buka Halaman Pendaftaran Mandiri & Klaim Sertifikat Khusus Peserta"
+                      >
+                        <Share2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                        <span>Portal Peserta</span>
+                      </button>
+                    </>
+                  )}
+                </nav>
+              </div>
 
-          {/* Right: Multi-Event Switcher, Schedule Capsule, Cloud Sync, Reset Data */}
-          <div
-            ref={popoverRef}
-            className="relative flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 text-sm text-slate-600"
-          >
-            {/* Multi-Event Switcher Button */}
-            <button
-              type="button"
-              onClick={() => {
-                setIsEditingEvent(false);
-                setIsCreatingNewEvent(false);
-                setIsEventsMenuOpen((prev) => !prev);
-              }}
-              className={cn(
-                'flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-colors cursor-pointer shrink-0',
-                isEventsMenuOpen
-                  ? 'bg-[#5e438f] text-white border-[#5e438f]'
-                  : 'bg-purple-50/80 hover:bg-purple-100/80 text-[#4c3575] border-purple-200/80'
-              )}
-              title="Pilih atau buat acara workshop baru (Riwayat Multi-Acara)"
-            >
-              <FolderKanban className="w-3.5 h-3.5 shrink-0" />
-              <span className="max-w-[90px] sm:max-w-[150px] truncate">{config.name}</span>
-              <span
-                className={cn(
-                  'px-1.5 py-0.2 rounded text-[10px] font-bold',
-                  isEventsMenuOpen ? 'bg-white/20 text-white' : 'bg-white text-[#5e438f]'
-                )}
+              {/* Right: Unified Event Selector Capsule + Account Pill */}
+              <div
+                ref={popoverRef}
+                className="relative flex items-center justify-end gap-2 text-sm text-slate-600 shrink-0"
               >
-                {eventsList.length}
-              </span>
-              <ChevronDown className="w-3.5 h-3.5 opacity-75 shrink-0" />
-            </button>
-
-            {/* Unified Interactive Event Info Capsule */}
-            <div
-              className={cn(
-                'hidden sm:flex items-center bg-slate-50 border border-slate-200/80 rounded-xl p-0.5 transition-colors',
-                canManageParticipants && 'hover:bg-purple-50/60 hover:border-purple-200'
-              )}
-            >
-              <button
-                type="button"
-                disabled={!canManageParticipants}
-                onClick={() => canManageParticipants && openEditor('date')}
-                className={cn(
-                  'group flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-left',
-                  canManageParticipants ? 'cursor-pointer' : 'cursor-default'
-                )}
-                title={
-                  canManageParticipants
-                    ? 'Klik untuk mengubah tanggal & jam mulai workshop'
-                    : 'Jadwal Workshop'
-                }
-              >
-                <Calendar className="w-3.5 h-3.5 text-[#5e438f] shrink-0" />
-                <span className="font-medium text-slate-700 text-xs whitespace-nowrap">
-                  {formatSafeDate(config.date, 'dd MMM yyyy')}
-                </span>
-              </button>
-
-              <span className="hidden xl:inline text-slate-300 select-none">|</span>
-
-              <button
-                type="button"
-                disabled={!canManageParticipants}
-                onClick={() => canManageParticipants && openEditor('location')}
-                className={cn(
-                  'group hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-left max-w-[175px]',
-                  canManageParticipants ? 'cursor-pointer' : 'cursor-default'
-                )}
-                title={
-                  canManageParticipants ? 'Klik untuk mengubah tempat workshop' : config.location
-                }
-              >
-                <MapPin className="w-3.5 h-3.5 text-[#5e438f] shrink-0" />
-                <span className="font-medium text-slate-700 text-xs truncate">
-                  {config.location}
-                </span>
-                {canManageParticipants && (
-                  <Pencil className="w-3 h-3 text-slate-400 group-hover:text-[#5e438f] shrink-0 ml-0.5" />
-                )}
-              </button>
-            </div>
-
-            {/* Active User Role Badge & Cloud Sync / Logout Controls */}
-            {isAdmin && !cloudUser && (
-              <button
-                type="button"
-                onClick={async () => {
-                  setCloudError(null);
-                  try {
-                    await connectCloud();
-                  } catch {
-                    setCloudError('Login Google dibatalkan atau gagal.');
-                  }
-                }}
-                className="flex items-center gap-1.5 text-xs font-semibold text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/80 px-2.5 py-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
-                title="Sinkronkan dengan Google Cloud (paku.tanam@gmail.com)"
-              >
-                <Cloud className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">
-                  {isCloudSyncing ? 'Menghubungkan...' : 'Cloud Sync'}
-                </span>
-              </button>
-            )}
-
-            <div
-              className={cn(
-                'flex items-center gap-1.5 border px-2.5 py-1.5 rounded-xl text-xs font-medium shrink-0',
-                isAdmin
-                  ? 'bg-emerald-50 border-emerald-200/90 text-emerald-800'
-                  : 'bg-purple-50 border-purple-200/90 text-[#4c3575]'
-              )}
-              title={
-                isAdmin
-                  ? `Admin (${authSession?.identifier}) - Akses Penuh`
-                  : `${authSession?.displayName || 'Panitia'} - Akses Dashboard Kehadiran, Scanner & Layar TV`
-              }
-            >
-              <span
-                className={cn(
-                  'w-2 h-2 rounded-full animate-pulse',
-                  isAdmin ? 'bg-emerald-500' : 'bg-[#5e438f]'
-                )}
-              />
-              <span className="font-semibold">
-                {isAdmin ? 'Admin' : authSession?.displayName || 'Panitia'}
-              </span>
-              <span className="hidden 2xl:inline max-w-[140px] truncate opacity-85">
-                {isAdmin ? `· ${authSession?.identifier}` : '· Presensi & TV'}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsPublicRegistrationOpen(false);
-                  void logoutApp();
-                }}
-                title="Keluar (Logout) dari akun saat ini"
-                className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 bg-white/80 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 rounded-md transition-colors cursor-pointer text-[11px] font-semibold"
-              >
-                <LogOut className="w-3 h-3" />
-                <span>Keluar</span>
-              </button>
-            </div>
-
-            {/* Reset Data Button (Only visible when canManageParticipants is true) */}
-            {canManageParticipants && (
-              <button
-                type="button"
-                onClick={() => setIsConfirmingReset(true)}
-                className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-rose-700 transition-colors bg-slate-100 hover:bg-rose-50 px-2.5 py-1.5 rounded-xl cursor-pointer shrink-0"
-                title="Kembalikan data peserta & acara saat ini ke kondisi awal"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Reset</span>
-              </button>
-            )}
-
-            {/* Popover 1: Multi-Event Manager & History Switcher */}
-            {isEventsMenuOpen && (
-              <div className="fixed inset-x-3 top-16 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 w-auto sm:w-96 bg-white rounded-2xl shadow-xl border border-purple-100 p-4 z-50 text-slate-900">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      Daftar &amp; Riwayat Acara Workshop
-                    </h3>
-                    <p className="text-[11px] text-slate-500">
-                      Pilih acara untuk memuat peserta &amp; presensi masing-masing sesi
-                    </p>
-                  </div>
+                {/* Unified Event & Schedule Capsule */}
+                <div className="flex items-center bg-purple-50/70 border border-purple-200/80 rounded-xl p-0.5">
                   <button
                     type="button"
                     onClick={() => {
-                      setIsEventsMenuOpen(false);
+                      setIsEditingEvent(false);
                       setIsCreatingNewEvent(false);
+                      setIsEventsMenuOpen((prev) => !prev);
                     }}
-                    className="p-1 text-slate-400 hover:text-slate-600 rounded-md cursor-pointer"
+                    className={cn(
+                      'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer',
+                      isEventsMenuOpen
+                        ? 'bg-[#5e438f] text-white'
+                        : 'text-[#4c3575] hover:bg-purple-100/70'
+                    )}
+                    title={`${config.name} · ${formatSafeDate(config.date, 'dd MMM yyyy')} · ${config.location}`}
                   >
-                    <X className="w-4 h-4" />
+                    <FolderKanban className="w-3.5 h-3.5 shrink-0" />
+                    <span className="max-w-[110px] sm:max-w-[160px] xl:max-w-[210px] truncate">
+                      {config.name}
+                    </span>
+                    <span className="hidden md:inline text-[11px] font-normal opacity-80 whitespace-nowrap">
+                      · {formatSafeDate(config.date, 'dd MMM')}
+                    </span>
+                    <ChevronDown className="w-3.5 h-3.5 opacity-75 shrink-0" />
+                  </button>
+
+                  {canManageParticipants && (
+                    <button
+                      type="button"
+                      onClick={() => openEditor('date')}
+                      title="Ubah jadwal, tanggal & lokasi acara aktif"
+                      className={cn(
+                        'hidden sm:inline-flex items-center justify-center p-1.5 rounded-lg transition-colors cursor-pointer',
+                        isEditingEvent
+                          ? 'bg-[#5e438f] text-white'
+                          : 'text-[#5e438f] hover:bg-purple-100/80'
+                      )}
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Cloud Sync Button (Compact) */}
+                {isAdmin && !cloudUser && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setCloudError(null);
+                      try {
+                        await connectCloud();
+                      } catch {
+                        setCloudError('Login Google dibatalkan atau gagal.');
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/80 px-2.5 py-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
+                    title="Sinkronkan dengan Google Cloud"
+                  >
+                    <Cloud className="w-3.5 h-3.5" />
+                    <span className="hidden xl:inline">
+                      {isCloudSyncing ? 'Sync...' : 'Cloud Sync'}
+                    </span>
+                  </button>
+                )}
+
+                {/* User Role & Logout Pill */}
+                <div
+                  className={cn(
+                    'flex items-center gap-1.5 border pl-2.5 pr-1.5 py-1 rounded-xl text-xs font-medium shrink-0',
+                    isAdmin
+                      ? 'bg-emerald-50/90 border-emerald-200/90 text-emerald-900'
+                      : 'bg-purple-50 border-purple-200/90 text-[#4c3575]'
+                  )}
+                  title={
+                    isAdmin
+                      ? `Admin (${authSession?.identifier}) - Akses Penuh`
+                      : `${authSession?.displayName || 'Panitia'} - Akses Dashboard Kehadiran, Scanner & Layar TV`
+                  }
+                >
+                  <span
+                    className={cn(
+                      'w-2 h-2 rounded-full shrink-0',
+                      isAdmin ? 'bg-emerald-500' : 'bg-[#5e438f]'
+                    )}
+                  />
+                  <span className="font-semibold">
+                    {isAdmin ? 'Admin' : authSession?.displayName || 'Panitia'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsPublicRegistrationOpen(false);
+                      void logoutApp();
+                    }}
+                    title="Keluar (Logout) dari akun saat ini"
+                    className="ml-0.5 inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 rounded-lg transition-colors cursor-pointer text-[11px] font-semibold"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    <span className="hidden sm:inline">Keluar</span>
                   </button>
                 </div>
 
-                {!isCreatingNewEvent ? (
-                  <>
-                    <div className="mt-3 max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-xl">
-                      {eventsList.map((ev) => {
-                        const isCurrent = ev.workshopId === activeWorkshopId;
-                        return (
-                          <div
-                            key={ev.workshopId}
-                            className={cn(
-                              'p-3 flex items-center justify-between gap-2 transition-colors',
-                              isCurrent ? 'bg-purple-50/70' : 'hover:bg-slate-50'
-                            )}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                switchWorkshop(ev.workshopId);
-                                setIsEventsMenuOpen(false);
-                              }}
-                              className="flex-1 min-w-0 text-left cursor-pointer"
-                            >
-                              <div className="flex items-center gap-2">
-                                <p
-                                  className={cn(
-                                    'text-xs font-semibold truncate',
-                                    isCurrent ? 'text-[#2b1b47]' : 'text-slate-800'
-                                  )}
-                                >
-                                  {ev.config.name}
-                                </p>
-                                {isCurrent && (
-                                  <span className="px-1.5 py-0.5 text-[10px] font-bold bg-[#5e438f] text-white rounded shrink-0">
-                                    Aktif
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                                {formatSafeDate(ev.config.date, 'dd MMM yyyy')} ·{' '}
-                                {ev.config.location}
-                              </p>
-                            </button>
-
-                            {canManageParticipants && eventsList.length > 1 && !isCurrent && (
-                              <button
-                                type="button"
-                                onClick={() => void deleteWorkshop(ev.workshopId)}
-                                title="Hapus acara ini dari riwayat"
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
+                {/* Popover 1: Multi-Event Manager & History Switcher */}
+                {isEventsMenuOpen && (
+                  <div className="fixed inset-x-3 top-16 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 w-auto sm:w-96 bg-white rounded-2xl shadow-xl border border-purple-100 p-4 z-50 text-slate-900">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">
+                          Daftar &amp; Pengaturan Acara ({eventsList.length})
+                        </h3>
+                        <p className="text-[11px] text-slate-500">
+                          Pilih sesi workshop atau kelola jadwal acara aktif
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsEventsMenuOpen(false);
+                          setIsCreatingNewEvent(false);
+                        }}
+                        className="p-1 text-slate-400 hover:text-slate-600 rounded-md cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
 
-                    {canManageParticipants && (
-                      <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openEditor('date')}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-                        >
-                          <Pencil className="w-3.5 h-3.5 text-[#5e438f]" />
-                          Edit Acara Aktif
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setIsCreatingNewEvent(true)}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-[#5e438f] hover:bg-[#4c3575] text-white rounded-xl transition-colors cursor-pointer shadow-2xs"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          Buat Acara Baru
-                        </button>
-                      </div>
-                    )}
-                  </>
-                ) : (
+                    {!isCreatingNewEvent ? (
+                      <>
+                        <div className="mt-3 max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-xl">
+                          {eventsList.map((ev) => {
+                            const isCurrent = ev.workshopId === activeWorkshopId;
+                            return (
+                              <div
+                                key={ev.workshopId}
+                                className={cn(
+                                  'p-3 flex items-center justify-between gap-2 transition-colors',
+                                  isCurrent ? 'bg-purple-50/70' : 'hover:bg-slate-50'
+                                )}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    switchWorkshop(ev.workshopId);
+                                    setIsEventsMenuOpen(false);
+                                  }}
+                                  className="flex-1 min-w-0 text-left cursor-pointer"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <p
+                                      className={cn(
+                                        'text-xs font-semibold truncate',
+                                        isCurrent ? 'text-[#2b1b47]' : 'text-slate-800'
+                                      )}
+                                    >
+                                      {ev.config.name}
+                                    </p>
+                                    {isCurrent && (
+                                      <span className="px-1.5 py-0.5 text-[10px] font-bold bg-[#5e438f] text-white rounded shrink-0">
+                                        Aktif
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                                    {formatSafeDate(ev.config.date, 'dd MMM yyyy')} ·{' '}
+                                    {ev.config.location}
+                                  </p>
+                                </button>
+
+                                {canManageParticipants && eventsList.length > 1 && !isCurrent && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void deleteWorkshop(ev.workshopId)}
+                                    title="Hapus acara ini dari riwayat"
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {canManageParticipants && (
+                          <div className="mt-3 pt-3 border-t border-slate-100 flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openEditor('date')}
+                                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200/80 rounded-xl transition-colors cursor-pointer"
+                              >
+                                <Pencil className="w-3.5 h-3.5 text-[#5e438f]" />
+                                Ubah Jadwal &amp; Lokasi
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setIsCreatingNewEvent(true)}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-[#5e438f] hover:bg-[#4c3575] text-white rounded-xl transition-colors cursor-pointer shadow-2xs"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                Buat Acara Baru
+                              </button>
+                            </div>
+
+                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                              <span className="text-[11px] text-slate-400">
+                                Atur ulang peserta acara ini ke awal:
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsEventsMenuOpen(false);
+                                  setIsConfirmingReset(true);
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                Reset Data Default
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : (
                   <form onSubmit={handleCreateNewEventSubmit} className="mt-3 space-y-3">
                     <div>
                       <label
@@ -970,8 +938,8 @@ function AppContent() {
         {/* Mobile/Tablet Tabs Navigation */}
         <div
           className={cn(
-            'grid lg:hidden gap-1.5 bg-white p-1.5 rounded-xl shadow-xs border border-purple-100 w-full max-w-lg mx-auto',
-            canManageParticipants ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'
+            'grid lg:hidden gap-1.5 bg-white p-1.5 rounded-xl shadow-xs border border-purple-100 w-full max-w-2xl mx-auto',
+            canManageParticipants ? 'grid-cols-2 sm:grid-cols-5' : 'grid-cols-3'
           )}
         >
           <button
@@ -1014,19 +982,29 @@ function AppContent() {
             <span className="truncate">Layar TV</span>
           </button>
           {canManageParticipants && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('registration')}
-              className={cn(
-                'flex items-center justify-center gap-1.5 py-2 px-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer truncate',
-                activeTab === 'registration'
-                  ? 'bg-purple-50 text-[#4c3575] font-semibold'
-                  : 'text-slate-600 hover:bg-slate-50'
-              )}
-            >
-              <UserPlus className="w-4 h-4 text-[#5e438f] shrink-0" />
-              <span className="truncate">Buat QR</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setActiveTab('registration')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 py-2 px-2 text-xs sm:text-sm font-medium rounded-lg transition-colors cursor-pointer truncate',
+                  activeTab === 'registration'
+                    ? 'bg-purple-50 text-[#4c3575] font-semibold'
+                    : 'text-slate-600 hover:bg-slate-50'
+                )}
+              >
+                <UserPlus className="w-4 h-4 text-[#5e438f] shrink-0" />
+                <span className="truncate">Pendaftaran</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminPortalPreview('register')}
+                className="col-span-2 sm:col-span-1 flex items-center justify-center gap-1.5 py-2 px-2 text-xs sm:text-sm font-semibold rounded-lg text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 transition-colors cursor-pointer truncate"
+              >
+                <Share2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                <span className="truncate">Portal Peserta</span>
+              </button>
+            </>
           )}
         </div>
 

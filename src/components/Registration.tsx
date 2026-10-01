@@ -25,8 +25,14 @@ import {
   ExternalLink,
   Award,
   Sparkles,
+  ShieldCheck,
+  Clock,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import {
+  computeApprovalSignature,
+  normalizePhoneForPaymentCode,
+} from '../lib/registrationTemplate';
 import {
   buildWhatsAppUrl,
   buildWhatsAppMessage,
@@ -131,6 +137,7 @@ export const Registration: React.FC<{
     registerParticipant,
     importParticipants,
     updateParticipant,
+    verifyParticipantPayment,
     deleteParticipant,
     updateConfig,
   } = useAppContext();
@@ -170,11 +177,34 @@ export const Registration: React.FC<{
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [paymentFilter, setPaymentFilter] = useState<'ALL' | 'PENDING' | 'VERIFIED'>('ALL');
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [isWaBroadcastOpen, setIsWaBroadcastOpen] = useState(false);
   const [isCertificateModalOpen, setIsCertificateModalOpen] = useState(false);
   const [copiedWa, setCopiedWa] = useState(false);
   const [copiedCardImg, setCopiedCardImg] = useState(false);
+
+  const buildSendApprovalWaUrl = (p: Participant) => {
+    const cleanPhone = normalizePhoneForPaymentCode(p.phone || '');
+    const waTarget = cleanPhone ? `62${cleanPhone}` : '';
+    const portalUrl = buildParticipantPortalUrl(activeWorkshopId, config, 'register');
+    const accSig = computeApprovalSignature(p.id, activeWorkshopId);
+    const sep = portalUrl.includes('?') ? '&' : '?';
+    const approvedUrl = `${portalUrl}${sep}pid=${encodeURIComponent(p.id)}&name=${encodeURIComponent(p.name)}&phone=${encodeURIComponent(p.phone || '')}&dom=${encodeURIComponent(p.institution || '')}&role=${encodeURIComponent(p.role || '')}&acc=${encodeURIComponent(accSig)}`;
+
+    const msg = [
+      `Assalamu'alaikum Kak *${p.name}* 🌸`,
+      `Alhamdulillah, pembayaran registrasi *${config.name}* Anda (ID: *${p.id}*) telah *DIVERIFIKASI / DI-ACC* oleh Admin & Panitia.`,
+      '',
+      `✅ *Kartu Pengenal (Barcode QR)* resmi Anda kini sudah aktif dan dapat langsung dibuka serta diunduh melalui tautan berikut:`,
+      approvedUrl,
+      '',
+      `Sampai jumpa di lokasi acara ya! 💕`,
+    ].join('\n');
+    return waTarget
+      ? `https://wa.me/${waTarget}?text=${encodeURIComponent(msg)}`
+      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  };
 
   const handleCopyWaMessage = async (p: Participant) => {
     try {
@@ -390,7 +420,7 @@ export const Registration: React.FC<{
     if (participantId) {
       setSelectedId(participantId);
     }
-    setFormTab('edit');
+    setFormTab(section === 'participant' ? 'edit' : 'event');
     editorPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTimeout(() => {
       if (section === 'participant') {
@@ -424,16 +454,16 @@ export const Registration: React.FC<{
     const sampleRows = [
       {
         'Nama Peserta': 'Dr. Aisyah Putri, M.Psi., Psikolog',
-        'Peran / Kategori': 'Peserta Workshop',
-        Institusi: 'Klinik Psikologi Harapan',
+        'Pekerjaan / Kegiatan': 'Psikolog & Merangkai Bunga',
+        'Tempat Tinggal / Domisili': 'Depok, Jawa Barat',
         Email: 'aisyah.putri@klinik.id',
         'No. WhatsApp': '0812-3456-7890',
         'ID Presensi (Opsional)': '',
       },
       {
         'Nama Peserta': 'Nadia Zahra, S.Psi.',
-        'Peran / Kategori': 'Tamu VIP',
-        Institusi: 'Universitas Indonesia',
+        'Pekerjaan / Kegiatan': 'Mahasiswi & Journaling',
+        'Tempat Tinggal / Domisili': 'Jakarta Selatan',
         Email: 'nadia.z@ui.ac.id',
         'No. WhatsApp': '0813-9876-5432',
         'ID Presensi (Opsional)': '',
@@ -477,9 +507,21 @@ export const Registration: React.FC<{
               return found ? String(found[1] ?? '').trim() : '';
             };
 
-            const name = findVal(['nama', 'name', 'peserta', 'participant']);
-            const role = findVal(['peran', 'role', 'kategori', 'jabatan']);
-            const institution = findVal(['institusi', 'instansi', 'institution', 'afiliasi', 'organisasi']);
+            const name = findVal(['nama', 'name', 'peserta', 'participant', 'bumi']);
+            const role = findVal(['peran', 'role', 'kategori', 'jabatan', 'pekerjaan', 'kegiatan']);
+            const institution = findVal([
+              'tempat tinggal',
+              'domisili',
+              'tinggal',
+              'kota',
+              'daerah',
+              'alamat',
+              'institusi',
+              'instansi',
+              'institution',
+              'afiliasi',
+              'organisasi',
+            ]);
             const email = findVal(['email', 'surel']);
             const phone = findVal(['whatsapp', 'wa', 'hp', 'telepon', 'phone', 'kontak']);
             const id = findVal(['id presensi', 'no presensi', 'kode', 'id']);
@@ -1098,19 +1140,19 @@ export const Registration: React.FC<{
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Peran / Kategori Kartu
+                        Pekerjaan / Kegiatan (Peran Kartu)
                       </label>
                       <input
                         type="text"
                         value={draftRole}
                         onChange={(e) => handleParticipantFieldChange('role', e.target.value)}
-                        placeholder="Peserta Workshop / VIP"
+                        placeholder="Contoh: Ibu Rumah Tangga / Mahasiswi"
                         className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
                       />
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Institusi / Afiliasi
+                        Tempat Tinggal / Domisili
                       </label>
                       <input
                         type="text"
@@ -1118,7 +1160,7 @@ export const Registration: React.FC<{
                         onChange={(e) =>
                           handleParticipantFieldChange('institution', e.target.value)
                         }
-                        placeholder="Nama institusi..."
+                        placeholder="Contoh: Depok, Jawa Barat / Jakarta Selatan"
                         className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
                       />
                     </div>
@@ -1166,131 +1208,123 @@ export const Registration: React.FC<{
                   </div>
                 </div>
 
-                {/* Section B: Informasi Acara & Header Kartu */}
-                <div className="pt-4 border-t border-slate-100 space-y-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-[#2b1b47]">
-                      2. Informasi Acara Workshop & Teks Kartu
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Ubah judul workshop, tanggal, jam, lokasi, serta subjudul header kartu
-                    </p>
+                {/* Quick Payment Verification / Approval Bar for Selected Participant */}
+                <div
+                  className={cn(
+                    'p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3',
+                    selectedParticipant.paymentVerified !== false
+                      ? 'bg-emerald-50/70 border-emerald-200/80'
+                      : 'bg-amber-50/80 border-amber-200'
+                  )}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <div
+                      className={cn(
+                        'w-8 h-8 rounded-lg text-white flex items-center justify-center shrink-0 mt-0.5',
+                        selectedParticipant.paymentVerified !== false
+                          ? 'bg-emerald-600'
+                          : 'bg-amber-500'
+                      )}
+                    >
+                      {selectedParticipant.paymentVerified !== false ? (
+                        <ShieldCheck className="w-4 h-4" />
+                      ) : (
+                        <Clock className="w-4 h-4" />
+                      )}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-bold text-slate-900">
+                          Status Verifikasi Pembayaran:
+                        </span>
+                        <span
+                          className={cn(
+                            'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
+                            selectedParticipant.paymentVerified !== false
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                              : 'bg-amber-100 text-amber-900 border border-amber-300'
+                          )}
+                        >
+                          {selectedParticipant.paymentVerified !== false
+                            ? `✓ Terverifikasi (${selectedParticipant.paymentVerifiedBy || 'Admin/Panitia'})`
+                            : '⏳ Menunggu Approval (ACC)'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-0.5">
+                        {selectedParticipant.paymentVerified !== false
+                          ? 'Kartu Pengenal (Barcode QR) peserta sudah terbuka & dapat digunakan untuk Check-in.'
+                          : 'Kartu QR peserta masih terkunci. Klik Terima (ACC) setelah bukti transfer sesuai.'}
+                      </p>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Judul Acara Workshop
-                      </label>
-                      <input
-                        ref={editEventInputRef}
-                        type="text"
-                        value={draftEventName}
-                        onChange={(e) => {
-                          setDraftEventName(e.target.value);
-                          updateConfig({ name: e.target.value });
+                  <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                    {selectedParticipant.paymentVerified === false ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          verifyParticipantPayment(selectedParticipant.id, true);
+                          showToast(
+                            `Pembayaran "${selectedParticipant.name}" disetujui (ACC)! Kartu QR kini aktif.`
+                          );
                         }}
-                        placeholder="Contoh: Self Healing and Flower Arranging"
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Tempat / Lokasi Acara
-                      </label>
-                      <input
-                        type="text"
-                        value={draftLocation}
-                        onChange={(e) => {
-                          setDraftLocation(e.target.value);
-                          updateConfig({ location: e.target.value });
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors cursor-pointer shadow-2xs"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Terima (ACC)</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          verifyParticipantPayment(selectedParticipant.id, false);
+                          showToast(
+                            `Status verifikasi pembayaran "${selectedParticipant.name}" dikembalikan ke Menunggu ACC.`
+                          );
                         }}
-                        placeholder="Contoh: Grand Ballroom, Hotel Mulia"
-                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
-                      />
-                    </div>
-                  </div>
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 transition-colors cursor-pointer"
+                      >
+                        <span>Batalkan ACC</span>
+                      </button>
+                    )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Tanggal Acara
-                      </label>
-                      <input
-                        type="date"
-                        value={draftDate}
-                        onChange={(e) => {
-                          setDraftDate(e.target.value);
-                          updateConfig({ date: e.target.value });
-                        }}
-                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Jam Mulai
-                      </label>
-                      <input
-                        type="time"
-                        value={draftTime}
-                        onChange={(e) => {
-                          setDraftTime(e.target.value);
-                          const combined = new Date(`${draftDate || config.date}T${e.target.value}:00`);
-                          if (!isNaN(combined.getTime())) {
-                            updateConfig({ startTime: combined.toISOString() });
-                          }
-                        }}
-                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Subjudul Header
-                      </label>
-                      <input
-                        ref={editOrganizerInputRef}
-                        type="text"
-                        value={draftOrganizer}
-                        onChange={(e) => {
-                          setDraftOrganizer(e.target.value);
-                          updateConfig({ organizer: e.target.value });
-                        }}
-                        placeholder="Muslimah Healing Journey"
-                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Tagline Kartu
-                      </label>
-                      <input
-                        type="text"
-                        value={draftTagline}
-                        onChange={(e) => {
-                          setDraftTagline(e.target.value);
-                          updateConfig({ tagline: e.target.value });
-                        }}
-                        placeholder="Let's Heal"
-                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
-                      />
-                    </div>
+                    <a
+                      href={buildSendApprovalWaUrl(selectedParticipant)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => {
+                        if (selectedParticipant.paymentVerified === false) {
+                          verifyParticipantPayment(selectedParticipant.id, true);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 hover:bg-purple-950 text-white transition-colors shadow-2xs"
+                      title="Setujui (ACC) & kirim link Kartu QR yang sudah aktif ke WhatsApp peserta"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5" />
+                      <span>Kirim Notifikasi ACC (WA)</span>
+                    </a>
                   </div>
                 </div>
 
                 <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <p className="text-xs text-slate-500">
-                    Tips: Anda juga dapat mengklik langsung bagian teks pada gambar kartu di kanan untuk mengeditnya.
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setFormTab('event')}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5e438f] hover:text-[#422a6e] transition-colors cursor-pointer"
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    Ingin mengubah judul acara, tanggal, atau logo kartu? Buka tab Acara &amp; Logo →
+                  </button>
                   <button
                     type="submit"
-                    className="inline-flex items-center gap-2 px-5 py-2.5 text-white text-sm font-semibold rounded-xl shadow-xs hover:opacity-95 transition-opacity cursor-pointer shrink-0"
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-white text-sm font-semibold rounded-xl shadow-xs hover:opacity-95 transition-opacity cursor-pointer shrink-0"
                     style={{
                       background:
                         'linear-gradient(115deg, #7c52b8 0%, #6b63c9 50%, #587cd9 100%)',
                     }}
                   >
                     <Check className="w-4 h-4" />
-                    Simpan Perubahan Kartu
+                    Simpan Data Peserta
                   </button>
                 </div>
               </form>
@@ -1342,14 +1376,14 @@ export const Registration: React.FC<{
                       htmlFor="reg-role"
                       className="block text-xs font-semibold text-slate-700 mb-1.5"
                     >
-                      Peran / Kategori
+                      Pekerjaan / Kegiatan Favorit
                     </label>
                     <input
                       id="reg-role"
                       type="text"
                       value={newRole}
                       onChange={(e) => setNewRole(e.target.value)}
-                      placeholder="Peserta Workshop"
+                      placeholder="Contoh: Ibu Rumah Tangga / Mahasiswi"
                       className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
                     />
                   </div>
@@ -1359,7 +1393,7 @@ export const Registration: React.FC<{
                       htmlFor="reg-institution"
                       className="block text-xs font-semibold text-slate-700 mb-1.5"
                     >
-                      Institusi / Afiliasi
+                      Tempat Tinggal / Domisili
                     </label>
                     <input
                       id="reg-institution"
@@ -1367,7 +1401,7 @@ export const Registration: React.FC<{
                       required
                       value={newInstitution}
                       onChange={(e) => setNewInstitution(e.target.value)}
-                      placeholder="Fakultas Psikologi / Klinik"
+                      placeholder="Contoh: Depok, Jawa Barat / Jakarta Selatan"
                       className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
                     />
                   </div>
@@ -1473,6 +1507,7 @@ export const Registration: React.FC<{
                       Nama Acara Workshop
                     </label>
                     <input
+                      ref={editEventInputRef}
                       type="text"
                       value={draftEventName}
                       onChange={(e) => {
@@ -1506,6 +1541,7 @@ export const Registration: React.FC<{
                       Subjudul Organisasi / Header
                     </label>
                     <input
+                      ref={editOrganizerInputRef}
                       type="text"
                       value={draftOrganizer}
                       onChange={(e) => {
@@ -1647,16 +1683,27 @@ export const Registration: React.FC<{
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold text-slate-900">
-                  Daftar Peserta ({participants.length})
+                  Daftar Peserta &amp; Verifikasi Pembayaran ({participants.length})
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Klik peserta untuk memilih kartu, atau gunakan aksi massal di kanan
+                  Klik peserta untuk melihat Kartu QR &amp; Bukti Transfer, atau klik{' '}
+                  <strong>Terima (ACC)</strong> untuk mengaktifkan kartu
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2">
+                <div className="relative w-full sm:w-56">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Cari nama, ID, domisili..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400 w-full"
+                  />
+                </div>
                 <label
                   title="Impor daftar peserta dari file Excel (.xlsx) atau CSV"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/80 rounded-lg transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/80 rounded-lg transition-colors cursor-pointer shrink-0"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   Impor Excel
@@ -1667,102 +1714,193 @@ export const Registration: React.FC<{
                     className="sr-only"
                   />
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setIsBatchModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#5e438f] hover:bg-[#4c3575] rounded-lg transition-colors cursor-pointer shadow-2xs"
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  Cetak Semua Kartu ({participants.length})
-                </button>
               </div>
             </div>
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Cari nama peserta, ID (HY-...), atau institusi..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 pr-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs sm:text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-400 w-full"
-              />
+
+            {/* Filter Status Approval Pembayaran */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { id: 'ALL', label: `Semua (${participants.length})` },
+                  {
+                    id: 'PENDING',
+                    label: `Menunggu ACC (${participants.filter((p) => p.paymentVerified === false).length})`,
+                  },
+                  {
+                    id: 'VERIFIED',
+                    label: `Terverifikasi / Lunas (${participants.filter((p) => p.paymentVerified !== false).length})`,
+                  },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setPaymentFilter(tab.id)}
+                  className={cn(
+                    'px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer',
+                    paymentFilter === tab.id
+                      ? 'bg-[#5e438f] text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80'
+                  )}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="max-h-96 overflow-y-auto divide-y divide-slate-100">
-            {filteredParticipants.map((p) => {
-              const isSelected = selectedParticipant?.id === p.id;
-              return (
-                <div
-                  key={p.id}
-                  onClick={() => {
-                    setSelectedId(p.id);
-                    setFormTab('edit');
-                  }}
-                  className={cn(
-                    'w-full text-left px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4 transition-colors cursor-pointer',
-                    isSelected ? 'bg-purple-50/80' : 'hover:bg-slate-50'
-                  )}
-                >
-                  <div className="min-w-0">
-                    <p
-                      className={cn(
-                        'text-sm font-semibold break-words sm:truncate',
-                        isSelected ? 'text-[#2b1b47]' : 'text-slate-900'
+          <div className="max-h-[440px] overflow-y-auto divide-y divide-slate-100">
+            {filteredParticipants
+              .filter((p) => {
+                if (paymentFilter === 'PENDING') return p.paymentVerified === false;
+                if (paymentFilter === 'VERIFIED') return p.paymentVerified !== false;
+                return true;
+              })
+              .map((p) => {
+                const isSelected = selectedParticipant?.id === p.id;
+                const isVerified = p.paymentVerified !== false;
+                return (
+                  <div
+                    key={p.id}
+                    onClick={() => {
+                      setSelectedId(p.id);
+                      setFormTab('edit');
+                    }}
+                    className={cn(
+                      'w-full text-left px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors cursor-pointer',
+                      isSelected
+                        ? 'bg-purple-50/90 border-l-4 border-l-[#5e438f]'
+                        : 'hover:bg-slate-50'
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p
+                          className={cn(
+                            'text-sm font-bold',
+                            isSelected ? 'text-[#2b1b47]' : 'text-slate-900'
+                          )}
+                        >
+                          {p.name}
+                        </p>
+                        <span className="font-mono tabular-nums text-[11px] font-semibold text-[#5e438f] bg-purple-100/80 px-2 py-0.5 rounded-md">
+                          {p.id}
+                        </span>
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-bold text-[10px]',
+                            isVerified
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                              : 'bg-amber-50 border-amber-300 text-amber-900'
+                          )}
+                        >
+                          {isVerified ? (
+                            <>
+                              <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
+                              <span>Terverifikasi (ACC)</span>
+                            </>
+                          ) : (
+                            <>
+                              <Clock className="w-2.5 h-2.5 text-amber-700" />
+                              <span>Menunggu ACC</span>
+                            </>
+                          )}
+                        </span>
+                        {p.paymentProofUrl && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-50 text-purple-800 border border-purple-200">
+                            Ada Bukti Transfer
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 truncate mt-1">
+                        {p.role || 'Peserta Workshop'} · {p.institution}
+                        {p.phone ? ` · WA: ${p.phone}` : ''}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                      {!isVerified ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            verifyParticipantPayment(p.id, true);
+                            showToast(`Pembayaran "${p.name}" (${p.id}) berhasil di-ACC!`);
+                          }}
+                          title="Setujui / ACC Pembayaran & Buka Kartu QR Peserta"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors cursor-pointer shadow-2xs"
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Terima (ACC)</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            verifyParticipantPayment(p.id, false);
+                            showToast(`Status ACC "${p.name}" dibatalkan.`);
+                          }}
+                          title="Batalkan status verifikasi (kembalikan ke Menunggu ACC)"
+                          className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium text-slate-600 bg-slate-100 hover:bg-rose-50 hover:text-rose-700 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <span>Batal ACC</span>
+                        </button>
                       )}
-                    >
-                      {p.name}
-                    </p>
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 mt-0.5">
-                      <span className="font-mono tabular-nums font-medium text-[#6b4c8c] shrink-0">
-                        {p.id}
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span>{p.role || 'Peserta Workshop'}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="truncate max-w-[200px] sm:max-w-[260px]">{p.institution}</span>
+
+                      <a
+                        href={buildSendApprovalWaUrl(p)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!isVerified) {
+                            verifyParticipantPayment(p.id, true);
+                          }
+                        }}
+                        title="Kirim Notifikasi ACC & Link Kartu QR ke WhatsApp Peserta"
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-purple-900 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors cursor-pointer"
+                      >
+                        <MessageCircle className="w-3 h-3 text-purple-700" />
+                        <span>WA ACC</span>
+                      </a>
+
+                      <a
+                        href={buildWhatsAppUrl(p, config)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSendWaWithAutoCopyCard(p);
+                        }}
+                        title="Kirim info tiket & salin gambar Kartu QR ke WhatsApp"
+                        className="p-1.5 text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/80 rounded-lg transition-colors cursor-pointer"
+                      >
+                        <ImageIcon className="w-3.5 h-3.5" />
+                      </a>
+
+                      {participants.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const nextList = participants.filter((item) => item.id !== p.id);
+                            deleteParticipant(p.id);
+                            if (isSelected && nextList.length > 0) {
+                              setSelectedId(nextList[0].id);
+                            }
+                            showToast(`Peserta "${p.name}" dihapus.`);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          title="Hapus peserta"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <a
-                      href={buildWhatsAppUrl(p, config)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSendWaWithAutoCopyCard(p);
-                      }}
-                      title={
-                        p.phone
-                          ? `Kirim info tiket via WhatsApp (${p.phone}) & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)`
-                          : 'Kirim info tiket via WhatsApp & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)'
-                      }
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/70 rounded-lg transition-colors cursor-pointer"
-                    >
-                      <MessageCircle className="w-3 h-3" />
-                      Kirim WA + Kartu
-                    </a>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        focusEditorSection('participant', p.id);
-                      }}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer',
-                        isSelected
-                          ? 'bg-[#5e438f] text-white'
-                          : 'text-[#5e438f] bg-purple-50 hover:bg-purple-100'
-                      )}
-                    >
-                      <Pencil className="w-3 h-3" />
-                      Edit Data
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
             {filteredParticipants.length === 0 && (
               <div className="p-8 text-center text-sm text-slate-500">
                 Tidak ada peserta yang cocok dengan pencarian.
@@ -1787,7 +1925,7 @@ export const Registration: React.FC<{
               className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-amber-50/90 hover:bg-amber-100 text-amber-900 border border-amber-200/80 text-xs font-bold transition-colors cursor-pointer"
             >
               <Award className="w-3.5 h-3.5 text-amber-600" />
-              <span>Pratinjau E-Sertifikat</span>
+              <span>Buka Studio E-Sertifikat</span>
             </button>
           </div>
 
@@ -1959,178 +2097,188 @@ export const Registration: React.FC<{
             </div>
           ) : null}
 
-          {/* Action Buttons Under Card */}
+          {/* Streamlined Action Panel Under Card */}
           {selectedParticipant && (
-            <div className="w-full max-w-md mt-4 flex flex-col gap-2.5">
-              <div className="flex flex-col sm:flex-row gap-2.5">
-                <button
-                  type="button"
-                  onClick={handleDownloadIdCard}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 text-white rounded-xl font-semibold text-sm shadow-xs hover:opacity-95 transition-opacity cursor-pointer"
-                  style={{
-                    background:
-                      'linear-gradient(115deg, #7c52b8 0%, #6b63c9 50%, #587cd9 100%)',
-                  }}
-                >
-                  <Download className="w-4 h-4" />
-                  Unduh Kartu Ini (PNG)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => focusEditorSection('participant')}
-                  className="inline-flex items-center justify-center gap-1.5 px-4 py-3 bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 rounded-xl font-medium text-sm transition-colors cursor-pointer shrink-0"
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                  Ubah Data Kartu
-                </button>
-              </div>
+            <div className="w-full max-w-md mt-4 flex flex-col gap-3">
+              {/* Bukti Transfer Pembayaran Peserta (Jika Ada) */}
+              {selectedParticipant.paymentProofUrl && (
+                <div className="p-3.5 rounded-2xl bg-white border border-purple-200/90 shadow-xs">
+                  <div className="flex items-center justify-between gap-2 mb-2.5">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-purple-900">
+                        Bukti Transfer · {selectedParticipant.name}
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        {selectedParticipant.paymentVerified
+                          ? 'Pembayaran telah diverifikasi (Lunas)'
+                          : 'Periksa bukti lalu klik Terima / Kirim Kode WA'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateParticipant(selectedParticipant.id, {
+                          paymentVerified: !selectedParticipant.paymentVerified,
+                        })
+                      }
+                      className={cn(
+                        'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0',
+                        selectedParticipant.paymentVerified
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-amber-500 hover:bg-amber-600 text-white shadow-xs'
+                      )}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      {selectedParticipant.paymentVerified ? 'Terverifikasi' : 'Terima (ACC)'}
+                    </button>
+                  </div>
 
-              <div className="flex flex-col sm:flex-row gap-2.5">
-                <a
-                  href={buildWhatsAppUrl(selectedParticipant, config)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() =>
-                    handleSendWaWithAutoCopyCard(
-                      selectedParticipant,
-                      qrContainerRef.current?.querySelector('canvas')
-                    )
-                  }
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-2xs transition-colors cursor-pointer"
-                  title={
-                    selectedParticipant.phone
-                      ? `Buka chat WhatsApp ke ${selectedParticipant.phone} & otomatis salin Gambar Kartu PNG ke Clipboard (Ctrl+V)`
-                      : 'Kirim undangan via WhatsApp & otomatis salin Gambar Kartu PNG ke Clipboard (Ctrl+V)'
-                  }
-                >
-                  <MessageCircle className="w-4 h-4" />
-                  <span>1-Klik Kirim WA + Salin Kartu PNG</span>
-                </a>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void handleCopyCardImageOnly(
-                      selectedParticipant,
-                      qrContainerRef.current?.querySelector('canvas')
-                    )
-                  }
-                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-medium text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
-                  title="Salin gambar Kartu PNG ke Clipboard (tinggal tekan Ctrl+V di WhatsApp)"
-                >
-                  {copiedCardImg ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Kartu Tersalin!</span>
-                    </>
-                  ) : (
-                    <>
-                      <ImageIcon className="w-3.5 h-3.5" />
-                      <span>Salin Gambar PNG</span>
-                    </>
-                  )}
-                </button>
-              </div>
+                  <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 max-h-44 flex items-center justify-center">
+                    <img
+                      src={selectedParticipant.paymentProofUrl}
+                      alt={`Bukti transfer ${selectedParticipant.name}`}
+                      className="max-h-40 w-auto object-contain"
+                    />
+                  </div>
+                </div>
+              )}
 
-              {/* Extra Row: Copy WA Text / Share File PNG (Mobile) / Preview Digital Ticket Link */}
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleCopyWaMessage(selectedParticipant)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl font-medium text-xs transition-colors cursor-pointer"
-                  title="Salin teks pesan undangan WhatsApp beserta Link E-Tiket Digital"
-                >
-                  {copiedWa ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-emerald-600" />
-                      <span className="text-emerald-700 font-semibold">Teks + Link Tersalin!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Salin Teks + Link Tiket</span>
-                    </>
-                  )}
-                </button>
+              {/* Group 1: Single-Participant Card Actions */}
+              <div className="p-3.5 rounded-2xl bg-white border border-purple-100 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                    Aksi Kartu · {selectedParticipant.name}
+                  </span>
+                  <span className="font-mono text-[11px] font-semibold text-[#5e438f]">
+                    {selectedParticipant.id}
+                  </span>
+                </div>
 
-                {typeof navigator !== 'undefined' && 'share' in navigator && (
+                {/* Primary 2 Buttons */}
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
+                    onClick={handleDownloadIdCard}
+                    className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-xs hover:opacity-95 transition-opacity cursor-pointer"
+                    style={{
+                      background:
+                        'linear-gradient(115deg, #7c52b8 0%, #6b63c9 50%, #587cd9 100%)',
+                    }}
+                  >
+                    <Download className="w-4 h-4 shrink-0" />
+                    <span>Unduh PNG</span>
+                  </button>
+
+                  <a
+                    href={buildWhatsAppUrl(selectedParticipant, config)}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     onClick={() =>
-                      void shareParticipantCardFile(
+                      handleSendWaWithAutoCopyCard(
                         selectedParticipant,
-                        config,
                         qrContainerRef.current?.querySelector('canvas')
                       )
                     }
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
-                    title="Bagikan file gambar Kartu PNG langsung ke aplikasi WhatsApp di HP"
+                    className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-2xs transition-colors cursor-pointer"
+                    title="Buka WhatsApp & salin Gambar Kartu PNG otomatis ke Clipboard (tinggal Ctrl+V)"
                   >
-                    <Share2 className="w-3.5 h-3.5 text-[#5e438f]" />
-                    <span>Share File PNG</span>
-                  </button>
-                )}
+                    <MessageCircle className="w-4 h-4 shrink-0" />
+                    <span>Kirim Kartu WA</span>
+                  </a>
+                </div>
 
-                {onPreviewDigitalTicket ? (
+                {/* Secondary 3 Compact Buttons */}
+                <div className="grid grid-cols-3 gap-1.5">
                   <button
                     type="button"
-                    onClick={() => onPreviewDigitalTicket(selectedParticipant)}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
-                    title="Lihat tampilan halaman E-Tiket Digital peserta"
+                    onClick={() =>
+                      void handleCopyCardImageOnly(
+                        selectedParticipant,
+                        qrContainerRef.current?.querySelector('canvas')
+                      )
+                    }
+                    className="inline-flex items-center justify-center gap-1 px-2.5 py-2 bg-slate-50 hover:bg-purple-50 text-slate-700 hover:text-[#4c3575] border border-slate-200 rounded-xl font-medium text-xs transition-colors cursor-pointer"
+                    title="Salin gambar Kartu PNG ke Clipboard (Ctrl+V di WhatsApp)"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Lihat E-Tiket</span>
+                    {copiedCardImg ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span className="truncate">Tersalin</span>
+                      </>
+                    ) : (
+                      <>
+                        <ImageIcon className="w-3.5 h-3.5 text-[#5e438f] shrink-0" />
+                        <span className="truncate">Salin PNG</span>
+                      </>
+                    )}
                   </button>
-                ) : (
-                  <a
-                    href={buildDigitalTicketUrl(selectedParticipant, config)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
-                    title="Buka halaman E-Tiket Digital peserta"
+
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyWaMessage(selectedParticipant)}
+                    className="inline-flex items-center justify-center gap-1 px-2.5 py-2 bg-slate-50 hover:bg-purple-50 text-slate-700 hover:text-[#4c3575] border border-slate-200 rounded-xl font-medium text-xs transition-colors cursor-pointer"
+                    title="Salin teks pesan undangan WhatsApp beserta Link E-Tiket Digital"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Lihat E-Tiket</span>
-                  </a>
-                )}
+                    {copiedWa ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span className="truncate">Tersalin</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="truncate">Salin Teks</span>
+                      </>
+                    )}
+                  </button>
+
+                  {onPreviewDigitalTicket ? (
+                    <button
+                      type="button"
+                      onClick={() => onPreviewDigitalTicket(selectedParticipant)}
+                      className="inline-flex items-center justify-center gap-1 px-2.5 py-2 bg-slate-50 hover:bg-purple-50 text-[#5e438f] border border-slate-200 rounded-xl font-medium text-xs transition-colors cursor-pointer"
+                      title="Lihat tampilan halaman E-Tiket Digital peserta"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">E-Tiket</span>
+                    </button>
+                  ) : (
+                    <a
+                      href={buildDigitalTicketUrl(selectedParticipant, config)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-center gap-1 px-2.5 py-2 bg-slate-50 hover:bg-purple-50 text-[#5e438f] border border-slate-200 rounded-xl font-medium text-xs transition-colors cursor-pointer"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">E-Tiket</span>
+                    </a>
+                  )}
+                </div>
               </div>
 
-              <div className="px-3 py-2 rounded-xl bg-emerald-50/70 border border-emerald-200/70 text-[11px] text-emerald-900 leading-relaxed">
-                <strong>Tips Kirim Gambar Kartu di WA:</strong> Saat Anda klik{' '}
-                <strong>1-Klik Kirim WA + Salin Kartu PNG</strong>, gambar kartu otomatis disalin ke{' '}
-                <em>Clipboard</em>. Begitu chat WhatsApp terbuka, tekan{' '}
-                <kbd className="px-1 py-0.5 bg-white border border-emerald-300 rounded font-mono font-bold">
-                  Ctrl + V
-                </kbd>{' '}
-                untuk menempelkan gambar Kartu QR beserta teks undangan &amp; tautan E-Tiket Digital!
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setIsBatchModalOpen(true)}
-                  className="flex-1 flex items-center justify-center gap-2 px-3.5 py-2.5 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer"
-                >
-                  <Layers className="w-4 h-4 text-[#5e438f]" />
-                  Cetak Kartu ({participants.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsCertificateModalOpen(true)}
-                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
-                  title="Buka Studio E-Sertifikat Otomatis bagi peserta yang hadir"
-                >
-                  <Award className="w-4 h-4 text-amber-600" />
-                  E-Sertifikat
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsWaBroadcastOpen(true)}
-                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
-                  title="Kirim ke semua nomor WhatsApp peserta secara beruntun"
-                >
-                  <MessageCircle className="w-4 h-4 text-teal-600" />
-                  Broadcast WA
-                </button>
+              {/* Group 2: Bulk Actions for All Participants */}
+              <div className="p-3.5 rounded-2xl bg-white border border-purple-100 shadow-xs space-y-2">
+                <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Aksi Massal ({participants.length} Peserta)
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsBatchModalOpen(true)}
+                    className="flex items-center justify-center gap-1.5 px-3 py-2 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-[#5e438f] shrink-0" />
+                    <span>Cetak Semua ({participants.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsWaBroadcastOpen(true)}
+                    className="flex items-center justify-center gap-1.5 px-3 py-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <span>Broadcast WA ({participants.length})</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}

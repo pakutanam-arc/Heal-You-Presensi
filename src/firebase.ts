@@ -68,13 +68,21 @@ export function handleFirestoreError(
 ) {
   const msg = error instanceof Error ? error.message : String(error);
 
-  // Gracefully ignore transient offline/network timeout errors so local mode continues working seamlessly
+  // When operating in local mode (Participant Portal, Panitia, or Local Admin without Google Cloud Auth),
+  // or when a user signs out while a request is in flight, ignore Firestore errors cleanly.
+  if (!auth.currentUser) {
+    return;
+  }
+
+  // Gracefully fall back to LocalStorage on transient offline/network or permission errors without crashing the app
   if (
     msg.includes('the client is offline') ||
     msg.includes('Could not reach Cloud Firestore backend') ||
-    msg.includes('unavailable')
+    msg.includes('unavailable') ||
+    msg.includes('Missing or insufficient permissions') ||
+    msg.includes('permission-denied')
   ) {
-    console.warn(`Firestore offline fallback (${operationType} on ${path}):`, msg);
+    console.warn(`Firestore local fallback (${operationType} on ${path}):`, msg);
     return;
   }
 
@@ -95,14 +103,13 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Notice: ', JSON.stringify(errInfo));
 }
 
 export async function signInWithGoogleCloud() {
   const res = await signInWithPopup(auth, googleProvider);
   void testConnection();
-  return res;
+  return res.user;
 }
 
 export async function signOutFromCloud() {
