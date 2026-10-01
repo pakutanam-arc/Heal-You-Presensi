@@ -6,6 +6,7 @@ import { cn } from '../lib/utils';
 import { useAppContext } from '../store';
 import { Participant } from '../types';
 import { HealYouLogo } from './HealYouLogo';
+import { extractBaseParticipantIdFromQr } from '../lib/qrSecurity';
 import {
   Maximize2, Minimize2, Volume2, VolumeX, Calendar, MapPin, Clock,
   CheckCircle2, X, Wind, Eye, Camera, CameraOff, SwitchCamera, QrCode,
@@ -384,13 +385,16 @@ export const WelcomeDisplay: React.FC<{ onClose?: () => void }> = ({ onClose }) 
       if (soundEnabled) audioService.playChime('welcome');
       return;
     }
-    const matched = participants.find((p) => p.id.toUpperCase() === cleanCode.toUpperCase());
+    const baseId = extractBaseParticipantIdFromQr(cleanCode) || cleanCode;
+    const matched =
+      result.participant ||
+      participants.find((p) => p.id.toUpperCase() === baseId.toUpperCase());
     if (matched) {
       setSpotlightParticipant(matched);
       setScanStatusBanner({ type: 'INFO', message: `PESERTA TERIDENTIFIKASI · HADIR PUKUL ${matched.checkInTime ? format(new Date(matched.checkInTime), 'HH:mm') : '-'} WIB` });
       if (soundEnabled) audioService.playChime('welcome');
     } else {
-      setScanStatusBanner({ type: 'ERROR', message: `KODE QR (${cleanCode}) TIDAK DITEMUKAN` });
+      setScanStatusBanner({ type: 'ERROR', message: `KODE QR (${baseId}) TIDAK DITEMUKAN` });
       if (soundEnabled) audioService.playChime('notice');
     }
   }, [checkIn, participants, soundEnabled]);

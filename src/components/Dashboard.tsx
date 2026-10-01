@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { useAppContext } from '../store';
-import { AttendanceStatus, Participant } from '../types';
+import { AttendanceStatus, Participant, ParticipantFeedback } from '../types';
 import { ExportButton } from './ExportButton';
 import { WhatsAppBroadcastModal } from './WhatsAppBroadcastModal';
 import { CertificateModal } from './CertificateModal';
@@ -21,11 +22,18 @@ import {
   Check,
   Share2,
   Award,
+  Star,
+  Copy,
+  ExternalLink,
+  MessageSquareHeart,
+  Download,
+  X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playScanBeep } from '../lib/sound';
 import {
   buildWhatsAppUrl,
+  buildParticipantPortalUrl,
   copyParticipantCardToClipboard,
   shareParticipantCardFile,
 } from '../lib/whatsapp';
@@ -35,18 +43,99 @@ import { motion } from 'motion/react';
 type StatusFilter = 'ALL' | AttendanceStatus;
 type SortOption = 'id' | 'recent' | 'name';
 
-export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> = ({
-  onEditParticipant,
-}) => {
-  const { participants, config, checkIn, updateParticipant, resetAttendance } = useAppContext();
+export const Dashboard: React.FC<{
+  onEditParticipant?: (id: string) => void;
+  onOpenParticipantPortal?: (tab?: 'register' | 'certificate') => void;
+}> = ({ onEditParticipant, onOpenParticipantPortal }) => {
+  const {
+    participants,
+    config,
+    feedbacks,
+    activeWorkshopId,
+    canManageParticipants,
+    checkIn,
+    updateParticipant,
+    resetAttendance,
+  } = useAppContext();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [sortBy, setSortBy] = useState<SortOption>('id');
   const [isWaBroadcastOpen, setIsWaBroadcastOpen] = useState(false);
   const [isCertificateModalOpen, setIsCertificateModalOpen] = useState(false);
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [isConfirmingResetAttendance, setIsConfirmingResetAttendance] = useState(false);
   const [certTargetId, setCertTargetId] = useState<string | null>(null);
   const [waCardNotice, setWaCardNotice] = useState<string | null>(null);
+  const [copiedPortalType, setCopiedPortalType] = useState<'register' | 'certificate' | null>(
+    null
+  );
+
+  const feedbackList = useMemo(() => {
+    const list = Object.values(feedbacks || {}) as ParticipantFeedback[];
+    return list.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  }, [feedbacks]);
+
+  const feedbackStats = useMemo(() => {
+    const count = feedbackList.length;
+    if (count === 0) {
+      return {
+        count: 0,
+        avgOverall: '0.0',
+        avgSpeaker: '0.0',
+        avgFacility: '0.0',
+      };
+    }
+    const sumOverall = feedbackList.reduce((acc, f) => acc + f.overallRating, 0);
+    const sumSpeaker = feedbackList.reduce((acc, f) => acc + f.speakerRating, 0);
+    const sumFacility = feedbackList.reduce((acc, f) => acc + f.facilityRating, 0);
+    return {
+      count,
+      avgOverall: (sumOverall / count).toFixed(1),
+      avgSpeaker: (sumSpeaker / count).toFixed(1),
+      avgFacility: (sumFacility / count).toFixed(1),
+    };
+  }, [feedbackList]);
+
+  const handleCopyPortalLink = async (tab: 'register' | 'certificate') => {
+    const url = buildParticipantPortalUrl(activeWorkshopId, config, tab);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedPortalType(tab);
+      setWaCardNotice(
+        tab === 'register'
+          ? 'Link Formulir Pendaftaran Mandiri Peserta berhasil disalin! Bagikan ke calon peserta.'
+          : 'Link Klaim E-Sertifikat & Evaluasi Mandiri berhasil disalin!'
+      );
+      window.setTimeout(() => setCopiedPortalType(null), 2500);
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleExportFeedbackExcel = () => {
+    if (feedbackList.length === 0) return;
+    const rows = feedbackList.map((f, idx) => ({
+      No: idx + 1,
+      'ID Peserta': f.participantId,
+      'Nama Peserta': f.participantName,
+      Instansi: f.institution,
+      'Rating Acara (1-5)': f.overallRating,
+      'Rating Materi & Narasumber (1-5)': f.speakerRating,
+      'Rating Panitia & Fasilitas (1-5)': f.facilityRating,
+      'Kesan, Pesan & Manfaat': f.takeaway,
+      'Usulan Topik Selanjutnya': f.suggestedTopic || '-',
+      Rekomendasi: f.recommendation,
+      'Status Klaim Sertifikat': f.certificateClaimed ? 'Sudah Klaim' : 'Belum',
+      'Waktu Evaluasi': f.submittedAt,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Evaluasi Workshop');
+    XLSX.writeFile(
+      wb,
+      `Rekap_Evaluasi_${config.name.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30)}.xlsx`
+    );
+  };
 
   const handleWaSendWithCardCopy = (p: Participant) => {
     void copyParticipantCardToClipboard(p, config).then((copied) => {
@@ -386,6 +475,101 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
         )}
       </div>
 
+      {/* Self-Registration Link & Post-Workshop Evaluation Quick Banner (Admin Only) */}
+      {canManageParticipants && (
+      <div
+        className="bg-white rounded-2xl shadow-xs border border-purple-100 p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+        style={{
+          background:
+            'linear-gradient(115deg, rgba(240,189,251,0.14) 0%, rgba(201,179,252,0.12) 50%, rgba(137,180,255,0.14) 100%)',
+        }}
+      >
+        <div className="flex items-start gap-3.5">
+          <div className="w-10 h-10 rounded-xl bg-purple-900 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-2xs">
+            <Share2 className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                Link Pendaftaran Mandiri &amp; Klaim E-Sertifikat Peserta
+              </h3>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800">
+                Khusus Peserta (Akses Terbatas)
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 mt-0.5">
+              Bagikan link ini kepada peserta. Pendaftar{' '}
+              <strong>hanya dapat mengakses formulir pendaftaran &amp; scan klaim sertifikat</strong>{' '}
+              tanpa bisa membuka Dashboard Admin.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => void handleCopyPortalLink('register')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-purple-900 hover:bg-purple-950 text-white shadow-2xs transition-all cursor-pointer"
+          >
+            {copiedPortalType === 'register' ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-300" />
+                Link Pendaftaran Disalin!
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                Salin Link Pendaftaran
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleCopyPortalLink('certificate')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-700 hover:bg-emerald-800 text-white shadow-2xs transition-all cursor-pointer"
+          >
+            {copiedPortalType === 'certificate' ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-200" />
+                Link Klaim Disalin!
+              </>
+            ) : (
+              <>
+                <Award className="w-3.5 h-3.5" />
+                Salin Link Klaim Sertifikat
+              </>
+            )}
+          </button>
+
+          {onOpenParticipantPortal && (
+            <button
+              type="button"
+              onClick={() => onOpenParticipantPortal('register')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-white hover:bg-purple-50 text-purple-950 border border-purple-200 shadow-2xs transition-all cursor-pointer"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-purple-700" />
+              Buka Halaman Peserta
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsFeedbackModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-200 transition-all cursor-pointer"
+          >
+            <MessageSquareHeart className="w-3.5 h-3.5 text-amber-600" />
+            Evaluasi ({feedbackStats.count})
+            {feedbackStats.count > 0 && (
+              <span className="px-1.5 py-0.2 rounded bg-amber-200/80 text-amber-950 text-[10px] font-bold">
+                {feedbackStats.avgOverall}★
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+      )}
+
       {/* Main Attendance Table Card */}
       <div className="flex-1 bg-white rounded-2xl shadow-xs border border-purple-100 overflow-hidden flex flex-col">
         <div className="p-5 border-b border-slate-100 flex flex-col gap-4">
@@ -415,7 +599,7 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {stats.attended > 0 && (
+                {canManageParticipants && stats.attended > 0 && (
                   <button
                     type="button"
                     onClick={() => setIsConfirmingResetAttendance(true)}
@@ -426,27 +610,31 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
                     <span>Reset Kehadiran</span>
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCertTargetId(null);
-                    setIsCertificateModalOpen(true);
-                  }}
-                  className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg text-xs sm:text-sm font-semibold transition-colors cursor-pointer shrink-0"
-                  title="Cetak & unduh E-Sertifikat otomatis bagi peserta yang hadir (PDF A4 / PNG)"
-                >
-                  <Award className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>E-Sertifikat ({stats.attended})</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsWaBroadcastOpen(true)}
-                  className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs sm:text-sm font-semibold transition-colors cursor-pointer shrink-0"
-                  title="Kirim pesan tiket & pengingat ke seluruh nomor WhatsApp peserta secara beruntun"
-                >
-                  <MessageCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Broadcast WA</span>
-                </button>
+                {canManageParticipants && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCertTargetId(null);
+                        setIsCertificateModalOpen(true);
+                      }}
+                      className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg text-xs sm:text-sm font-semibold transition-colors cursor-pointer shrink-0"
+                      title="Cetak & unduh E-Sertifikat otomatis bagi peserta yang hadir (PDF A4 / PNG)"
+                    >
+                      <Award className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>E-Sertifikat ({stats.attended})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsWaBroadcastOpen(true)}
+                      className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs sm:text-sm font-semibold transition-colors cursor-pointer shrink-0"
+                      title="Kirim pesan tiket & pengingat ke seluruh nomor WhatsApp peserta secara beruntun"
+                    >
+                      <MessageCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>Broadcast WA</span>
+                    </button>
+                  </>
+                )}
                 <ExportButton />
               </div>
             </div>
@@ -556,6 +744,17 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
                           {p.role}
                         </span>
                       )}
+                      {canManageParticipants && feedbacks[p.id.toUpperCase()] && (
+                        <button
+                          type="button"
+                          onClick={() => setIsFeedbackModalOpen(true)}
+                          title="Peserta telah mengisi evaluasi pasca-workshop & mengklaim E-Sertifikat"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 rounded cursor-pointer hover:bg-amber-100"
+                        >
+                          <Star className="w-2.5 h-2.5 fill-amber-400 text-amber-500" />
+                          Evaluasi ({feedbacks[p.id.toUpperCase()].overallRating}★) &amp; Klaim
+                        </button>
+                      )}
                     </div>
                     <p className="text-slate-600 text-xs mt-0.5 font-medium">
                       {p.institution}
@@ -614,46 +813,50 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
                         </button>
                       )}
 
-                      <a
-                        href={buildWhatsAppUrl(p, config)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() => handleWaSendWithCardCopy(p)}
-                        title={
-                          p.phone
-                            ? `Kirim info tiket ke WhatsApp (${p.phone}) & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)`
-                            : 'Kirim info tiket via WhatsApp & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)'
-                        }
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/70 rounded-lg transition-colors cursor-pointer"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        WA + Kartu
-                      </a>
+                      {canManageParticipants && (
+                        <>
+                          <a
+                            href={buildWhatsAppUrl(p, config)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => handleWaSendWithCardCopy(p)}
+                            title={
+                              p.phone
+                                ? `Kirim info tiket ke WhatsApp (${p.phone}) & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)`
+                                : 'Kirim info tiket via WhatsApp & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)'
+                            }
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/70 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            WA + Kartu
+                          </a>
 
-                      {typeof navigator !== 'undefined' && 'share' in navigator && (
-                        <button
-                          type="button"
-                          onClick={() => void shareParticipantCardFile(p, config)}
-                          title="Bagikan file gambar Kartu PNG langsung ke WhatsApp (HP)"
-                          className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/60 rounded-lg transition-colors cursor-pointer"
-                        >
-                          <Share2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                          {typeof navigator !== 'undefined' && 'share' in navigator && (
+                            <button
+                              type="button"
+                              onClick={() => void shareParticipantCardFile(p, config)}
+                              title="Bagikan file gambar Kartu PNG langsung ke WhatsApp (HP)"
+                              className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/60 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Share2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
 
-                      {p.status !== 'PENDING' && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCertTargetId(p.id);
-                            setIsCertificateModalOpen(true);
-                          }}
-                          title={`Buka & unduh E-Sertifikat untuk ${p.name}`}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 rounded-lg transition-colors cursor-pointer"
-                        >
-                          <Award className="w-3.5 h-3.5 text-amber-600" />
-                          Sertifikat
-                        </button>
+                          {p.status !== 'PENDING' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCertTargetId(p.id);
+                                setIsCertificateModalOpen(true);
+                              }}
+                              title={`Buka & unduh E-Sertifikat untuk ${p.name}`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Award className="w-3.5 h-3.5 text-amber-600" />
+                              Sertifikat
+                            </button>
+                          )}
+                        </>
                       )}
 
                       {onEditParticipant && (
@@ -697,6 +900,165 @@ export const Dashboard: React.FC<{ onEditParticipant?: (id: string) => void }> =
         config={config}
         initialParticipantId={certTargetId}
       />
+
+      {/* Modal Rekap Umpan Balik / Evaluasi Pasca-Workshop */}
+      {isFeedbackModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setIsFeedbackModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-3xl border border-purple-100 shadow-2xl max-w-4xl w-full max-h-[88vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 sm:p-6 border-b border-slate-100 flex items-center justify-between gap-4 bg-purple-50/40">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                  <MessageSquareHeart className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-slate-900">
+                    Rekap Evaluasi Pasca-Workshop &amp; Klaim E-Sertifikat Mandiri
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {config.name} · {feedbackStats.count} dari {stats.attended} peserta hadir telah
+                    mengisi evaluasi
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {feedbackList.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleExportFeedbackExcel}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-700 hover:bg-emerald-800 text-white transition-all cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Unduh Excel (.xlsx)
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsFeedbackModalOpen(false)}
+                  className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1">
+              {/* Summary Rating Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-4 rounded-2xl bg-purple-50/70 border border-purple-100">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-purple-700 block">
+                    Total Klaim &amp; Evaluasi
+                  </span>
+                  <span className="text-2xl font-bold text-purple-950 mt-1 block">
+                    {feedbackStats.count}{' '}
+                    <span className="text-xs font-normal text-slate-500">
+                      / {stats.attended} hadir
+                    </span>
+                  </span>
+                </div>
+                <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-100">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-800 block">
+                    Kepuasan Acara
+                  </span>
+                  <span className="text-2xl font-bold text-amber-950 mt-1 flex items-center gap-1">
+                    {feedbackStats.avgOverall}
+                    <Star className="w-5 h-5 fill-amber-400 text-amber-500" />
+                  </span>
+                </div>
+                <div className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-100">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 block">
+                    Materi &amp; Narasumber
+                  </span>
+                  <span className="text-2xl font-bold text-emerald-950 mt-1 flex items-center gap-1">
+                    {feedbackStats.avgSpeaker}
+                    <Star className="w-5 h-5 fill-amber-400 text-amber-500" />
+                  </span>
+                </div>
+                <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-100">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-blue-800 block">
+                    Panitia &amp; Fasilitas
+                  </span>
+                  <span className="text-2xl font-bold text-blue-950 mt-1 flex items-center gap-1">
+                    {feedbackStats.avgFacility}
+                    <Star className="w-5 h-5 fill-amber-400 text-amber-500" />
+                  </span>
+                </div>
+              </div>
+
+              {feedbackList.length === 0 ? (
+                <div className="text-center py-12 px-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
+                  <MessageSquareHeart className="w-8 h-8 text-slate-400 mx-auto" />
+                  <p className="text-sm font-bold text-slate-700">
+                    Belum Ada Evaluasi Pasca-Workshop yang Masuk
+                  </p>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    Bagikan <strong>Link Klaim Sertifikat</strong> kepada peserta yang telah hadir.
+                    Saat peserta memindai QR Kartu Peserta di halaman pendaftaran mandiri dan
+                    mengisi evaluasi, ulasan mereka akan muncul secara otomatis di sini.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {feedbackList.map((item) => (
+                    <div
+                      key={item.participantId}
+                      className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded font-mono text-xs font-bold bg-purple-100 text-purple-900">
+                            {item.participantId}
+                          </span>
+                          <span className="text-sm font-bold text-slate-900">
+                            {item.participantName}
+                          </span>
+                          <span className="text-xs text-slate-500">· {item.institution}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="px-2.5 py-0.5 rounded-full font-bold bg-amber-100 text-amber-900">
+                            Acara: {item.overallRating}★ · Materi: {item.speakerRating}★ · Panitia:{' '}
+                            {item.facilityRating}★
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full font-semibold bg-emerald-100 text-emerald-800">
+                            {item.recommendation}
+                          </span>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-slate-700 bg-white p-3 rounded-xl border border-slate-200/70 leading-relaxed">
+                        &ldquo;{item.takeaway}&rdquo;
+                      </p>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>
+                          <strong>Usulan Topik Selanjutnya:</strong>{' '}
+                          {item.suggestedTopic || 'Tidak ada usulan khusus'}
+                        </span>
+                        <span>
+                          Diklaim:{' '}
+                          {(() => {
+                            try {
+                              return format(new Date(item.submittedAt), 'dd MMM yyyy HH:mm');
+                            } catch {
+                              return item.submittedAt;
+                            }
+                          })()}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Konfirmasi Reset Kehadiran Peserta */}
       {isConfirmingResetAttendance && (

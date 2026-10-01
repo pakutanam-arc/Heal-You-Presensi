@@ -1,14 +1,20 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Participant, WorkshopConfig } from '../types';
+import { useAppContext } from '../store';
 import {
   normalizeWhatsAppPhone,
   formatSafeDateStr,
 } from '../lib/whatsapp';
+import { QRCodeCanvas } from 'qrcode.react';
 import {
   renderBotanicalCertificateCanvas,
-  CertificateSettings,
-  SignatureMode,
   getShortSignatureName,
+  compressSignatureDataUrl,
+  compressTemplateDataUrl,
+  getCanonicalParticipantSeqIndex,
+  formatOfficialCertificateNumber,
+  computeParticipantQrSignature,
+  buildCertificateVerificationUrl,
 } from '../lib/certificateRenderer';
 import {
   Award,
@@ -32,6 +38,10 @@ import {
   Ban,
   Maximize2,
   Minimize2,
+  Cloud,
+  FolderKanban,
+  CopyCheck,
+  RefreshCw,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -42,26 +52,6 @@ interface CertificateModalProps {
   config: WorkshopConfig;
   initialParticipantId?: string | null;
 }
-
-const DEFAULT_CERT_SETTINGS: CertificateSettings = {
-  organizerHeader: '',
-  certTitle: 'SERTIFIKAT PENGHARGAAN',
-  certSubtitle: 'Diberikan dengan penuh apresiasi kepada:',
-  numberSuffix: '/SERT-HY/MHJ/2026',
-  city: 'Jakarta',
-  bodyIntro:
-    'Atas partisipasi aktif dan kehadirannya dalam kegiatan pemulihan batin & kesehatan mental:',
-  signer1Label: 'Mengetahui, Penyelenggara:',
-  signer1Name: 'Hj. Siti Sarah, M.Psi., Psikolog',
-  signer1Title: 'Ketua Penyelenggara · Muslimah Healing Journey',
-  signer1SigMode: 'TEXT',
-  signer1SignatureText: 'Siti Sarah',
-  enableSigner2: true,
-  signer2Name: 'Dr. Aisyah Putri, M.Psi., Psikolog',
-  signer2Title: 'Narasumber & Psikolog Utama',
-  signer2SigMode: 'TEXT',
-  signer2SignatureText: 'Aisyah Putri',
-};
 
 const SAMPLE_PREVIEW_PARTICIPANT: Participant = {
   id: 'HY-001',
@@ -80,6 +70,23 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
   config,
   initialParticipantId,
 }) => {
+  const {
+    certificateSettings: settings,
+    updateCertificateSettings: setSettings,
+    resetCertificateSettings,
+    saveCertificateSettingsToCloudNow,
+    copyCertificateSettingsToAllWorkshops,
+    isCertCloudSynced,
+    isCertCloudSaving,
+    cloudUser,
+    isAdmin,
+    canManageParticipants,
+    eventsList,
+    activeWorkshopId,
+    switchWorkshop,
+    connectCloud,
+  } = useAppContext();
+
   const [filterMode, setFilterMode] = useState<'ATTENDED' | 'ALL'>('ATTENDED');
   const [selectedParticipantId, setSelectedParticipantId] = useState<string>('');
   const [showAdvancedTextSettings, setShowAdvancedTextSettings] = useState(false);
@@ -95,42 +102,6 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
   const isDrawingRef = useRef(false);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
   const signerEditorRef = useRef<HTMLDivElement | null>(null);
-
-  const [settings, setSettings] = useState<CertificateSettings>(() => {
-    try {
-      const saved = localStorage.getItem('heal_you_certificate_settings_v1');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return {
-          ...DEFAULT_CERT_SETTINGS,
-          ...parsed,
-          signer1SigMode:
-            parsed.signer1SigMode ||
-            (parsed.signer1SignatureDataUrl ? 'IMAGE' : 'TEXT'),
-          signer2SigMode:
-            parsed.signer2SigMode ||
-            (parsed.signer2SignatureDataUrl ? 'IMAGE' : 'TEXT'),
-          signer1SignatureText:
-            parsed.signer1SignatureText ??
-            getShortSignatureName(parsed.signer1Name || DEFAULT_CERT_SETTINGS.signer1Name),
-          signer2SignatureText:
-            parsed.signer2SignatureText ??
-            getShortSignatureName(parsed.signer2Name || DEFAULT_CERT_SETTINGS.signer2Name),
-        };
-      }
-    } catch {
-      // Ignore
-    }
-    return DEFAULT_CERT_SETTINGS;
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('heal_you_certificate_settings_v1', JSON.stringify(settings));
-    } catch {
-      // Ignore storage quota errors
-    }
-  }, [settings]);
 
   // Initialize signature drawing canvas when opened
   useEffect(() => {
@@ -174,7 +145,7 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
         setSelectedParticipantId(attendedParticipants[0].id);
       }
     }
-  }, [isOpen, initialParticipantId]);
+  }, [isOpen, initialParticipantId, activeWorkshopId]);
 
   // Always guarantee an active participant for preview (even if 0 checked-in or 0 total)
   const activeParticipant = useMemo(() => {
@@ -191,6 +162,26 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     const idx = targetList.findIndex((p) => p.id === activeParticipant.id);
     return idx >= 0 ? idx : 0;
   }, [targetList, activeParticipant]);
+
+  const activeCanonicalSeqIndex = useMemo(
+    () => getCanonicalParticipantSeqIndex(activeParticipant.id, participants),
+    [activeParticipant.id, participants]
+  );
+
+  const activeOfficialCertNumber = useMemo(
+    () =>
+      formatOfficialCertificateNumber(
+        activeParticipant.id,
+        participants,
+        settings.numberSuffix
+      ),
+    [activeParticipant.id, participants, settings.numberSuffix]
+  );
+
+  const activeQrSig = useMemo(
+    () => computeParticipantQrSignature(activeParticipant.id),
+    [activeParticipant.id]
+  );
 
   const showNotice = (msg: string) => {
     setToastMsg(msg);
@@ -213,7 +204,7 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
   useEffect(() => {
     if (!isOpen || !activeParticipant) return;
     let cancelled = false;
-    void renderCertificateCanvas(activeParticipant, activeIndex).then((canvas) => {
+    void renderCertificateCanvas(activeParticipant, activeCanonicalSeqIndex).then((canvas) => {
       if (!cancelled) {
         setPreviewDataUrl(canvas.toDataURL('image/png'));
       }
@@ -221,7 +212,7 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, activeParticipant, activeIndex, config, settings]);
+  }, [isOpen, activeParticipant, activeCanonicalSeqIndex, config, settings]);
 
   if (!isOpen) return null;
 
@@ -232,24 +223,24 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       if (typeof reader.result === 'string') {
-        const dataUrl = reader.result;
+        const compressed = await compressSignatureDataUrl(reader.result);
         setSettings((prev) =>
           signer === 1
             ? {
                 ...prev,
                 signer1SigMode: 'IMAGE',
-                signer1SignatureDataUrl: dataUrl,
+                signer1SignatureDataUrl: compressed,
               }
             : {
                 ...prev,
                 signer2SigMode: 'IMAGE',
-                signer2SignatureDataUrl: dataUrl,
+                signer2SignatureDataUrl: compressed,
               }
         );
         showNotice(
-          `Gambar tanda tangan ${signer === 1 ? 'Penyelenggara' : 'Narasumber'} berhasil dipasang!`
+          `Gambar tanda tangan ${signer === 1 ? 'Penyelenggara' : 'Narasumber'} berhasil dipasang & disinkronkan!`
         );
       }
     };
@@ -322,33 +313,39 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   };
 
-  const saveDrawnSignature = () => {
+  const saveDrawnSignature = async () => {
     const canvas = sigCanvasRef.current;
     if (!canvas || !drawingSigner) return;
-    const dataUrl = canvas.toDataURL('image/png');
+    const rawDataUrl = canvas.toDataURL('image/png');
+    const compressed = await compressSignatureDataUrl(rawDataUrl);
+    const targetSigner = drawingSigner;
     setSettings((prev) =>
-      drawingSigner === 1
+      targetSigner === 1
         ? {
             ...prev,
             signer1SigMode: 'IMAGE',
-            signer1SignatureDataUrl: dataUrl,
+            signer1SignatureDataUrl: compressed,
           }
         : {
             ...prev,
             signer2SigMode: 'IMAGE',
-            signer2SignatureDataUrl: dataUrl,
+            signer2SignatureDataUrl: compressed,
           }
     );
     showNotice(
-      `Tanda tangan goresan ${drawingSigner === 1 ? 'Penyelenggara' : 'Narasumber'} berhasil disimpan ke Pratinjau E-Sertifikat!`
+      `Tanda tangan goresan ${targetSigner === 1 ? 'Penyelenggara' : 'Narasumber'} berhasil disimpan & disinkronkan!`
     );
     setDrawingSigner(null);
   };
 
-  const handleDownloadSinglePng = async (p: Participant, idx: number) => {
+  const handleDownloadSinglePng = async (p: Participant, seqIdx?: number) => {
     setIsBusy(true);
     try {
-      const canvas = await renderCertificateCanvas(p, idx);
+      const canonicalIdx =
+        typeof seqIdx === 'number'
+          ? seqIdx
+          : getCanonicalParticipantSeqIndex(p.id, participants);
+      const canvas = await renderCertificateCanvas(p, canonicalIdx);
       const dataUrl = canvas.toDataURL('image/png');
       const link = document.createElement('a');
       link.download = `ESertifikat_HealYou_${p.id}_${p.name.replace(/[^a-z0-9]/gi, '_')}.png`;
@@ -360,12 +357,16 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     }
   };
 
-  const handleCopyCertificateToClipboard = async (p: Participant, idx: number): Promise<boolean> => {
+  const handleCopyCertificateToClipboard = async (p: Participant, seqIdx?: number): Promise<boolean> => {
     try {
       if (typeof navigator === 'undefined' || !navigator.clipboard || !window.ClipboardItem) {
         return false;
       }
-      const canvas = await renderCertificateCanvas(p, idx);
+      const canonicalIdx =
+        typeof seqIdx === 'number'
+          ? seqIdx
+          : getCanonicalParticipantSeqIndex(p.id, participants);
+      const canvas = await renderCertificateCanvas(p, canonicalIdx);
       const blob = await new Promise<Blob>((resolve, reject) => {
         canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('No blob'))), 'image/png');
       });
@@ -397,8 +398,12 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     ].join('\n');
   };
 
-  const handleSendCertificateWa = (p: Participant, idx: number) => {
-    void handleCopyCertificateToClipboard(p, idx).then((copied) => {
+  const handleSendCertificateWa = (p: Participant, seqIdx?: number) => {
+    const canonicalIdx =
+      typeof seqIdx === 'number'
+        ? seqIdx
+        : getCanonicalParticipantSeqIndex(p.id, participants);
+    void handleCopyCertificateToClipboard(p, canonicalIdx).then((copied) => {
       if (copied) {
         showNotice(
           `Gambar E-Sertifikat "${p.name}" telah disalin ke Clipboard! Tekan Ctrl+V (Paste) di ruang chat WhatsApp.`
@@ -409,10 +414,14 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     });
   };
 
-  const handleShareCertificateMobile = async (p: Participant, idx: number) => {
+  const handleShareCertificateMobile = async (p: Participant, seqIdx?: number) => {
     try {
       if (typeof navigator === 'undefined' || !navigator.share) return;
-      const canvas = await renderCertificateCanvas(p, idx);
+      const canonicalIdx =
+        typeof seqIdx === 'number'
+          ? seqIdx
+          : getCanonicalParticipantSeqIndex(p.id, participants);
+      const canvas = await renderCertificateCanvas(p, canonicalIdx);
       const blob = await new Promise<Blob>((resolve, reject) => {
         canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('No blob'))), 'image/png');
       });
@@ -441,7 +450,9 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     try {
       const dataUrls: string[] = [];
       for (let i = 0; i < printTargets.length; i++) {
-        const canvas = await renderCertificateCanvas(printTargets[i], i);
+        const p = printTargets[i];
+        const canonicalIdx = getCanonicalParticipantSeqIndex(p.id, participants);
+        const canvas = await renderCertificateCanvas(p, canonicalIdx);
         dataUrls.push(canvas.toDataURL('image/png'));
       }
 
@@ -545,7 +556,8 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
     try {
       for (let i = 0; i < downloadTargets.length; i++) {
         const p = downloadTargets[i];
-        const canvas = await renderCertificateCanvas(p, i);
+        const canonicalIdx = getCanonicalParticipantSeqIndex(p.id, participants);
+        const canvas = await renderCertificateCanvas(p, canonicalIdx);
         const link = document.createElement('a');
         link.download = `ESertifikat_HealYou_${p.id}_${p.name.replace(/[^a-z0-9]/gi, '_')}.png`;
         link.href = canvas.toDataURL('image/png');
@@ -560,6 +572,22 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+      {/* Hidden QR canvas for activeParticipant (including SAMPLE_PREVIEW_PARTICIPANT fallback) */}
+      <div className="hidden" aria-hidden="true">
+        <QRCodeCanvas
+          id={`portal-cert-qr-${activeParticipant.id}`}
+          value={buildCertificateVerificationUrl(
+            activeParticipant,
+            activeCanonicalSeqIndex,
+            settings.numberSuffix
+          )}
+          size={360}
+          level="M"
+          includeMargin={false}
+          fgColor="#261742"
+          bgColor="#ffffff"
+        />
+      </div>
       {/* Fullscreen Zoom Modal for Certificate Preview */}
       {isZoomedPreview && previewDataUrl && (
         <div
@@ -590,57 +618,121 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
       <div className="bg-white rounded-3xl border border-purple-100 shadow-2xl max-w-6xl w-full max-h-[95vh] flex flex-col overflow-hidden">
         {/* Top Modal Header */}
         <div className="shrink-0 px-4 sm:px-5 py-3.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 bg-gradient-to-r from-purple-50/70 via-white to-amber-50/50">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-[#5e438f] text-white flex items-center justify-center shrink-0 shadow-xs">
               <Award className="w-5 h-5" />
             </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-bold text-slate-900">
-                Studio &amp; Pratinjau E-Sertifikat · Heal You
-              </h2>
-              <p className="text-xs text-slate-600">
-                Pratinjau langsung A4 Landscape · Nama &amp; tanda tangan Penyelenggara dan Narasumber dapat diedit
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base sm:text-lg font-bold text-slate-900 truncate">
+                  Studio &amp; Pratinjau E-Sertifikat · Heal You
+                </h2>
+                {cloudUser ? (
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border',
+                      isCertCloudSaving
+                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                        : isCertCloudSynced
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          : 'bg-purple-50 text-[#4c3575] border-purple-200'
+                    )}
+                  >
+                    {isCertCloudSaving ? (
+                      <>
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        <span>Menyimpan ke Cloud...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Cloud className="w-3 h-3 text-emerald-600" />
+                        <span>Tersinkronisasi Cloud &amp; Per-Acara</span>
+                      </>
+                    )}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void connectCloud()}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 hover:bg-purple-50 text-slate-700 hover:text-[#4c3575] border border-slate-200 transition-colors cursor-pointer"
+                    title="Hubungkan ke Google Cloud agar pengaturan E-Sertifikat tersinkronisasi antar perangkat"
+                  >
+                    <Cloud className="w-3 h-3 text-[#5e438f]" />
+                    <span>Tersimpan Per-Acara (Hubungkan Cloud)</span>
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-slate-600 truncate mt-0.5">
+                Acara Aktif: <strong className="text-[#4c3575]">{config.name}</strong> (
+                {formatSafeDateStr(config.date, 'dd MMM yyyy')})
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <label
-              title="Unggah gambar referensi sertifikat (otomatis menghapus teks lama & menggantinya dengan data peserta, QR, dan tanda tangan dinamis)"
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-white hover:bg-purple-50 text-[#4c3575] border border-purple-200 transition-colors cursor-pointer"
-            >
-              <Upload className="w-3.5 h-3.5 text-[#5e438f]" />
-              <span>
-                {settings.customTemplateDataUrl
-                  ? 'Ganti Gambar Referensi'
-                  : 'Pakai Gambar Referensi'}
-              </span>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    if (typeof reader.result === 'string') {
-                      setSettings((prev) => ({
-                        ...prev,
-                        customTemplateDataUrl: reader.result as string,
-                      }));
-                      showNotice(
-                        'Gambar referensi sertifikat diterapkan dengan tata letak presisi!'
-                      );
-                    }
-                  };
-                  reader.readAsDataURL(file);
-                  e.target.value = '';
-                }}
-                className="sr-only"
-              />
-            </label>
+            {/* Per-Event Quick Selector if multiple events exist */}
+            {eventsList.length > 1 && (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-purple-50/80 border border-purple-200 text-xs">
+                <FolderKanban className="w-3.5 h-3.5 text-[#5e438f] shrink-0" />
+                <select
+                  value={activeWorkshopId}
+                  onChange={(e) => {
+                    switchWorkshop(e.target.value);
+                    showNotice(
+                      'Berpindah sesi acara — pengaturan E-Sertifikat disesuaikan untuk acara ini.'
+                    );
+                  }}
+                  aria-label="Pilih Sesi Acara untuk E-Sertifikat"
+                  className="bg-transparent font-semibold text-[#2b1b47] focus:outline-none max-w-[180px] truncate cursor-pointer"
+                >
+                  {eventsList.map((ev) => (
+                    <option key={ev.workshopId} value={ev.workshopId}>
+                      {ev.config.name} ({ev.config.date})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-            {settings.customTemplateDataUrl && (
+            {canManageParticipants && (
+              <label
+                title="Unggah gambar referensi sertifikat (otomatis menghapus teks lama & menggantinya dengan data peserta, QR, dan tanda tangan dinamis)"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-white hover:bg-purple-50 text-[#4c3575] border border-purple-200 transition-colors cursor-pointer"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#5e438f]" />
+                <span>
+                  {settings.customTemplateDataUrl
+                    ? 'Ganti Gambar Referensi'
+                    : 'Pakai Gambar Referensi'}
+                </span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = async () => {
+                      if (typeof reader.result === 'string') {
+                        const compressed = await compressTemplateDataUrl(reader.result);
+                        setSettings((prev) => ({
+                          ...prev,
+                          customTemplateDataUrl: compressed || (reader.result as string),
+                        }));
+                        showNotice(
+                          'Gambar referensi sertifikat diterapkan & disinkronkan untuk acara ini!'
+                        );
+                      }
+                    };
+                    reader.readAsDataURL(file);
+                    e.target.value = '';
+                  }}
+                  className="sr-only"
+                />
+              </label>
+            )}
+
+            {canManageParticipants && settings.customTemplateDataUrl && (
               <button
                 type="button"
                 onClick={() => {
@@ -665,19 +757,23 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
               <span>Edit TTD &amp; Nama</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setShowAdvancedTextSettings(!showAdvancedTextSettings)}
-              className={cn(
-                'inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-colors cursor-pointer',
-                showAdvancedTextSettings
-                  ? 'bg-[#5e438f] text-white border-[#5e438f]'
-                  : 'bg-white text-[#4c3575] border-purple-200 hover:bg-purple-50'
-              )}
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-              <span>{showAdvancedTextSettings ? 'Tutup Judul & Nomor' : 'Edit Judul & Nomor'}</span>
-            </button>
+            {canManageParticipants && (
+              <button
+                type="button"
+                onClick={() => setShowAdvancedTextSettings(!showAdvancedTextSettings)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-colors cursor-pointer',
+                  showAdvancedTextSettings
+                    ? 'bg-[#5e438f] text-white border-[#5e438f]'
+                    : 'bg-white text-[#4c3575] border-purple-200 hover:bg-purple-50'
+                )}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>
+                  {showAdvancedTextSettings ? 'Tutup Judul & Nomor' : 'Edit Judul & Nomor'}
+                </span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -727,22 +823,22 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
         )}
 
         {/* Optional Header / Certificate Number / Intro Text Settings */}
-        {showAdvancedTextSettings && (
+        {showAdvancedTextSettings && canManageParticipants && (
           <div className="shrink-0 px-5 py-3.5 bg-purple-50/50 border-b border-purple-100 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-xs font-bold uppercase tracking-wider text-[#4c3575]">
-                Pengaturan Judul, Nomor, Kota &amp; Kalimat Sertifikat
+                Pengaturan Judul, Nomor, Kota &amp; Kalimat Sertifikat ({config.name})
               </h3>
               <button
                 type="button"
                 onClick={() => {
-                  setSettings(DEFAULT_CERT_SETTINGS);
-                  showNotice('Pengaturan sertifikat dikembalikan ke bawaan awal.');
+                  resetCertificateSettings();
+                  showNotice('Pengaturan sertifikat acara ini dikembalikan ke bawaan awal.');
                 }}
                 className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-rose-600 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Reset Semua ke Bawaan
+                Reset Acara Ini ke Bawaan
               </button>
             </div>
 
@@ -815,7 +911,7 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
           <div className="order-1 lg:order-2 lg:col-span-8 p-4 sm:p-5 bg-[#f8f6fc] lg:overflow-y-auto space-y-4">
             {/* Navigation & Quick Status Header */}
             <div className="w-full max-w-3xl mx-auto flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-100 text-[#4c3575] text-xs font-bold">
                   <Sparkles className="w-3.5 h-3.5 text-amber-600" />
                   PRATINJAU E-SERTIFIKAT
@@ -823,6 +919,13 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                 <span className="text-xs font-semibold text-slate-700">
                   #{activeIndex + 1} dari {Math.max(targetList.length, 1)}:{' '}
                   <strong className="text-slate-900">{activeParticipant.name}</strong>
+                </span>
+                <span
+                  title="Barcode Kartu Pengenal dan QR E-Sertifikat terhubung dengan tanda tangan kriptografi yang sama"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-mono font-semibold"
+                >
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                  {activeOfficialCertNumber} · SIG:{activeQrSig}
                 </span>
               </div>
 
@@ -888,7 +991,9 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                 <button
                   type="button"
                   disabled={isBusy}
-                  onClick={() => void handleDownloadSinglePng(activeParticipant, activeIndex)}
+                  onClick={() =>
+                    void handleDownloadSinglePng(activeParticipant, activeCanonicalSeqIndex)
+                  }
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white shadow-xs hover:opacity-95 transition-opacity cursor-pointer"
                   style={{
                     background:
@@ -902,15 +1007,16 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    void handleCopyCertificateToClipboard(activeParticipant, activeIndex).then(
-                      (ok) => {
-                        if (ok) {
-                          showNotice(
-                            `Gambar E-Sertifikat "${activeParticipant.name}" disalin ke Clipboard! Tinggal tekan Ctrl+V di WhatsApp.`
-                          );
-                        }
+                    void handleCopyCertificateToClipboard(
+                      activeParticipant,
+                      activeCanonicalSeqIndex
+                    ).then((ok) => {
+                      if (ok) {
+                        showNotice(
+                          `Gambar E-Sertifikat "${activeParticipant.name}" disalin ke Clipboard! Tinggal tekan Ctrl+V di WhatsApp.`
+                        );
                       }
-                    );
+                    });
                   }}
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#4c3575] bg-white hover:bg-purple-50 border border-purple-200 transition-colors cursor-pointer"
                 >
@@ -924,7 +1030,10 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                   <button
                     type="button"
                     onClick={() =>
-                      void handleShareCertificateMobile(activeParticipant, activeIndex)
+                      void handleShareCertificateMobile(
+                        activeParticipant,
+                        activeCanonicalSeqIndex
+                      )
                     }
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#4c3575] bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-colors cursor-pointer"
                   >
@@ -941,7 +1050,9 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  onClick={() => handleSendCertificateWa(activeParticipant, activeIndex)}
+                  onClick={() =>
+                    handleSendCertificateWa(activeParticipant, activeCanonicalSeqIndex)
+                  }
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs transition-colors cursor-pointer"
                 >
                   <MessageCircle className="w-4 h-4" />
@@ -958,457 +1069,519 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
                 <div className="flex items-center gap-2">
                   <PenTool className="w-4 h-4 text-[#5e438f]" />
-                  <h3 className="text-xs sm:text-sm font-bold text-[#2b1b47]">
-                    Edit Nama &amp; Tanda Tangan Penyelenggara dan Narasumber
-                  </h3>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold text-[#2b1b47]">
+                      Edit Nama &amp; Tanda Tangan Penyelenggara dan Narasumber
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Tersimpan khusus untuk acara <strong>{config.name}</strong>{' '}
+                      {cloudUser && isAdmin
+                        ? 'dan otomatis disinkronkan ke Cloud'
+                        : !cloudUser
+                          ? '(tersimpan lokal per-acara)'
+                          : '(disinkronkan dari Admin Cloud)'}
+                    </p>
+                  </div>
                 </div>
-                <span className="text-[11px] text-slate-500">
-                  Hasil edit langsung tampil pada Pratinjau E-Sertifikat di atas
-                </span>
+
+                {canManageParticipants && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {cloudUser && isAdmin && (
+                      <button
+                        type="button"
+                        disabled={isCertCloudSaving}
+                        onClick={() => {
+                          void saveCertificateSettingsToCloudNow().then((ok) => {
+                            if (ok) {
+                              showNotice(
+                                `Pengaturan E-Sertifikat untuk acara "${config.name}" berhasil disimpan ke Cloud!`
+                              );
+                            }
+                          });
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>
+                          {isCertCloudSaving ? 'Menyimpan...' : 'Simpan ke Cloud Sekarang'}
+                        </span>
+                      </button>
+                    )}
+
+                    {eventsList.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void copyCertificateSettingsToAllWorkshops().then((count) => {
+                            showNotice(
+                              `Pengaturan TTD & Sertifikat berhasil diterapkan ke seluruh ${count} sesi acara!`
+                            );
+                          });
+                        }}
+                        title="Salin pengaturan Nama & Tanda Tangan ini ke seluruh sesi acara workshop yang ada"
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200 text-[11px] font-semibold transition-colors cursor-pointer"
+                      >
+                        <CopyCheck className="w-3.5 h-3.5 text-[#5e438f]" />
+                        <span>Terapkan ke Semua Acara ({eventsList.length})</span>
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {/* Interactive Signature Drawing Pad Drawer (When Active) */}
-              {drawingSigner !== null && (
-                <div className="p-3.5 rounded-2xl bg-purple-50/70 border border-purple-200 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="text-xs font-bold text-[#2b1b47]">
-                        Goreskan Tanda Tangan{' '}
-                        {drawingSigner === 1 ? 'Penyelenggara (Kiri)' : 'Narasumber (Kanan)'}
-                      </p>
-                      <p className="text-[11px] text-slate-600">
-                        Gunakan mouse, touchpad, atau jari di layar sentuh untuk menulis tanda tangan:
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] font-medium text-slate-600 mr-1">
-                        Warna Tinta:
-                      </span>
-                      {[
-                        { color: '#2b194d', label: 'Ungu Tua' },
-                        { color: '#0f172a', label: 'Hitam' },
-                        { color: '#1e3a8a', label: 'Biru Tinta' },
-                      ].map((ink) => (
-                        <button
-                          key={ink.color}
-                          type="button"
-                          onClick={() => setInkColor(ink.color)}
-                          title={ink.label}
-                          className={cn(
-                            'w-5 h-5 rounded-full border-2 transition-transform cursor-pointer',
-                            inkColor === ink.color
-                              ? 'scale-110 border-amber-500 shadow-xs'
-                              : 'border-white'
-                          )}
-                          style={{ backgroundColor: ink.color }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-xl border-2 border-dashed border-purple-300 overflow-hidden">
-                    <canvas
-                      ref={sigCanvasRef}
-                      width={520}
-                      height={180}
-                      onPointerDown={handlePointerDown}
-                      onPointerMove={handlePointerMove}
-                      onPointerUp={handlePointerUp}
-                      onPointerCancel={handlePointerUp}
-                      className="w-full h-36 touch-none cursor-crosshair block"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={clearSignaturePad}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold cursor-pointer"
-                    >
-                      <Eraser className="w-3.5 h-3.5" />
-                      <span>Bersihkan Kanvas</span>
-                    </button>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setDrawingSigner(null)}
-                        className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-semibold cursor-pointer"
-                      >
-                        Batal
-                      </button>
-                      <button
-                        type="button"
-                        onClick={saveDrawnSignature}
-                        className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#5e438f] hover:bg-[#4c3575] text-white text-xs font-semibold shadow-xs cursor-pointer"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Simpan Tanda Tangan</span>
-                      </button>
-                    </div>
-                  </div>
+              {!canManageParticipants ? (
+                <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 text-xs text-amber-900">
+                  Anda sedang terhubung sebagai <strong>Panitia Scanner</strong>. Pengaturan nama
+                  serta tanda tangan Penyelenggara dan Narasumber disinkronkan secara otomatis dari{' '}
+                  <strong>Admin Cloud</strong>.
                 </div>
-              )}
+              ) : (
+                <>
+                  {/* Interactive Signature Drawing Pad Drawer (When Active) */}
+                  {drawingSigner !== null && (
+                    <div className="p-3.5 rounded-2xl bg-purple-50/70 border border-purple-200 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-bold text-[#2b1b47]">
+                            Goreskan Tanda Tangan{' '}
+                            {drawingSigner === 1 ? 'Penyelenggara (Kiri)' : 'Narasumber (Kanan)'}
+                          </p>
+                          <p className="text-[11px] text-slate-600">
+                            Gunakan mouse, touchpad, atau jari di layar sentuh untuk menulis tanda
+                            tangan:
+                          </p>
+                        </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* PENYELENGGARA (SIGNER 1 - LEFT) */}
-                <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200/90 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#4c3575] uppercase tracking-wider">
-                      1. Penyelenggara (Kiri)
-                    </span>
-                    <span className="text-[10px] font-medium text-slate-500">
-                      Posisi Kiri Bawah
-                    </span>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                        Nama Lengkap &amp; Gelar Penyelenggara
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Contoh: Hj. Siti Sarah, M.Psi., Psikolog"
-                        value={settings.signer1Name}
-                        onChange={(e) => {
-                          const newName = e.target.value;
-                          setSettings((prev) => ({
-                            ...prev,
-                            signer1Name: newName,
-                            signer1SignatureText:
-                              prev.signer1SignatureText ===
-                              getShortSignatureName(prev.signer1Name)
-                                ? getShortSignatureName(newName)
-                                : prev.signer1SignatureText,
-                          }));
-                        }}
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-900 focus:outline-none focus:border-[#5e438f]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                        Jabatan / Peran Penyelenggara
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Contoh: Ketua Penyelenggara · Muslimah Healing Journey"
-                        value={settings.signer1Title}
-                        onChange={(e) =>
-                          setSettings({ ...settings, signer1Title: e.target.value })
-                        }
-                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-[#5e438f]"
-                      />
-                    </div>
-
-                    {/* Signature Mode & Controls for Penyelenggara */}
-                    <div className="pt-1 space-y-2">
-                      <label className="block text-[11px] font-semibold text-slate-700">
-                        Tanda Tangan Penyelenggara:
-                      </label>
-                      <div className="flex flex-wrap gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSettings({ ...settings, signer1SigMode: 'TEXT' })
-                          }
-                          className={cn(
-                            'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
-                            settings.signer1SigMode === 'TEXT'
-                              ? 'bg-[#5e438f] text-white border-[#5e438f]'
-                              : 'bg-white text-slate-700 border-slate-200 hover:bg-purple-50'
-                          )}
-                        >
-                          <Type className="w-3 h-3" />
-                          <span>Kaligrafi Teks</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setDrawingSigner(1)}
-                          className={cn(
-                            'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
-                            drawingSigner === 1 ||
-                              (settings.signer1SigMode === 'IMAGE' &&
-                                settings.signer1SignatureDataUrl)
-                              ? 'bg-amber-600 text-white border-amber-600'
-                              : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50'
-                          )}
-                        >
-                          <PenTool className="w-3 h-3" />
-                          <span>Tulis / Gambar TTD</span>
-                        </button>
-
-                        <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 text-[11px] font-semibold cursor-pointer">
-                          <Upload className="w-3 h-3" />
-                          <span>Upload PNG</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={(e) => handleSignatureUpload(1, e)}
-                            className="sr-only"
-                          />
-                        </label>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSettings({ ...settings, signer1SigMode: 'NONE' })
-                          }
-                          className={cn(
-                            'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
-                            settings.signer1SigMode === 'NONE'
-                              ? 'bg-slate-700 text-white border-slate-700'
-                              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
-                          )}
-                          title="Kosongkan area tanda tangan untuk tanda tangan basah manual"
-                        >
-                          <Ban className="w-3 h-3" />
-                          <span>Kosong</span>
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-medium text-slate-600 mr-1">
+                            Warna Tinta:
+                          </span>
+                          {[
+                            { color: '#2b194d', label: 'Ungu Tua' },
+                            { color: '#0f172a', label: 'Hitam' },
+                            { color: '#1e3a8a', label: 'Biru Tinta' },
+                          ].map((ink) => (
+                            <button
+                              key={ink.color}
+                              type="button"
+                              onClick={() => setInkColor(ink.color)}
+                              title={ink.label}
+                              className={cn(
+                                'w-5 h-5 rounded-full border-2 transition-transform cursor-pointer',
+                                inkColor === ink.color
+                                  ? 'scale-110 border-amber-500 shadow-xs'
+                                  : 'border-white'
+                              )}
+                              style={{ backgroundColor: ink.color }}
+                            />
+                          ))}
+                        </div>
                       </div>
 
-                      {settings.signer1SigMode === 'TEXT' && (
+                      <div className="bg-white rounded-xl border-2 border-dashed border-purple-300 overflow-hidden">
+                        <canvas
+                          ref={sigCanvasRef}
+                          width={520}
+                          height={180}
+                          onPointerDown={handlePointerDown}
+                          onPointerMove={handlePointerMove}
+                          onPointerUp={handlePointerUp}
+                          onPointerCancel={handlePointerUp}
+                          className="w-full h-36 touch-none cursor-crosshair block"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={clearSignaturePad}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold cursor-pointer"
+                        >
+                          <Eraser className="w-3.5 h-3.5" />
+                          <span>Bersihkan Kanvas</span>
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setDrawingSigner(null)}
+                            className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-semibold cursor-pointer"
+                          >
+                            Batal
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void saveDrawnSignature()}
+                            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#5e438f] hover:bg-[#4c3575] text-white text-xs font-semibold shadow-xs cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Simpan Tanda Tangan</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* PENYELENGGARA (SIGNER 1 - LEFT) */}
+                    <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200/90 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-[#4c3575] uppercase tracking-wider">
+                          1. Penyelenggara (Kiri)
+                        </span>
+                        <span className="text-[10px] font-medium text-slate-500">
+                          Posisi Kiri Bawah
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
                         <div>
-                          <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
-                            Teks Goresan Tanda Tangan Kaligrafi:
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                            Nama Lengkap &amp; Gelar Penyelenggara
                           </label>
                           <input
                             type="text"
-                            placeholder="Ketik teks tanda tangan..."
-                            value={settings.signer1SignatureText}
-                            onChange={(e) =>
-                              setSettings({
-                                ...settings,
-                                signer1SignatureText: e.target.value,
-                              })
-                            }
-                            className="w-full px-2.5 py-1 bg-white border border-purple-200 rounded-lg text-xs italic font-serif text-[#3b2763]"
+                            placeholder="Contoh: Hj. Siti Sarah, M.Psi., Psikolog"
+                            value={settings.signer1Name}
+                            onChange={(e) => {
+                              const newName = e.target.value;
+                              setSettings((prev) => ({
+                                ...prev,
+                                signer1Name: newName,
+                                signer1SignatureText:
+                                  prev.signer1SignatureText ===
+                                  getShortSignatureName(prev.signer1Name)
+                                    ? getShortSignatureName(newName)
+                                    : prev.signer1SignatureText,
+                              }));
+                            }}
+                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-900 focus:outline-none focus:border-[#5e438f]"
                           />
                         </div>
-                      )}
 
-                      {settings.signer1SigMode === 'IMAGE' &&
-                        settings.signer1SignatureDataUrl && (
-                          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white rounded-lg border border-purple-200">
-                            <div className="flex items-center gap-2">
-                              <img
-                                src={settings.signer1SignatureDataUrl}
-                                alt="TTD Penyelenggara"
-                                className="h-8 w-auto object-contain"
-                              />
-                              <span className="text-[11px] text-emerald-700 font-medium">
-                                TTD Gambar Aktif
-                              </span>
-                            </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                            Jabatan / Peran Penyelenggara
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Contoh: Ketua Penyelenggara · Muslimah Healing Journey"
+                            value={settings.signer1Title}
+                            onChange={(e) =>
+                              setSettings({ ...settings, signer1Title: e.target.value })
+                            }
+                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-[#5e438f]"
+                          />
+                        </div>
+
+                        {/* Signature Mode & Controls for Penyelenggara */}
+                        <div className="pt-1 space-y-2">
+                          <label className="block text-[11px] font-semibold text-slate-700">
+                            Tanda Tangan Penyelenggara:
+                          </label>
+                          <div className="flex flex-wrap gap-1.5">
                             <button
                               type="button"
                               onClick={() =>
-                                setSettings({
-                                  ...settings,
-                                  signer1SignatureDataUrl: undefined,
-                                  signer1SigMode: 'TEXT',
-                                })
+                                setSettings({ ...settings, signer1SigMode: 'TEXT' })
                               }
-                              className="text-[11px] text-rose-600 hover:underline font-medium cursor-pointer"
+                              className={cn(
+                                'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
+                                settings.signer1SigMode === 'TEXT'
+                                  ? 'bg-[#5e438f] text-white border-[#5e438f]'
+                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-purple-50'
+                              )}
                             >
-                              Hapus
+                              <Type className="w-3 h-3" />
+                              <span>Kaligrafi Teks</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => setDrawingSigner(1)}
+                              className={cn(
+                                'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
+                                drawingSigner === 1 ||
+                                  (settings.signer1SigMode === 'IMAGE' &&
+                                    settings.signer1SignatureDataUrl)
+                                  ? 'bg-amber-600 text-white border-amber-600'
+                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50'
+                              )}
+                            >
+                              <PenTool className="w-3 h-3" />
+                              <span>Tulis / Gambar TTD</span>
+                            </button>
+
+                            <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 text-[11px] font-semibold cursor-pointer">
+                              <Upload className="w-3 h-3" />
+                              <span>Upload PNG</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => handleSignatureUpload(1, e)}
+                                className="sr-only"
+                              />
+                            </label>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSettings({ ...settings, signer1SigMode: 'NONE' })
+                              }
+                              className={cn(
+                                'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
+                                settings.signer1SigMode === 'NONE'
+                                  ? 'bg-slate-700 text-white border-slate-700'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                              )}
+                              title="Kosongkan area tanda tangan untuk tanda tangan basah manual"
+                            >
+                              <Ban className="w-3 h-3" />
+                              <span>Kosong</span>
                             </button>
                           </div>
-                        )}
-                    </div>
-                  </div>
-                </div>
 
-                {/* NARASUMBER (SIGNER 2 - RIGHT) */}
-                <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200/90 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <label className="inline-flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={settings.enableSigner2}
-                        onChange={(e) =>
-                          setSettings({ ...settings, enableSigner2: e.target.checked })
-                        }
-                        className="rounded text-[#5e438f]"
-                      />
-                      <span className="text-xs font-bold text-[#4c3575] uppercase tracking-wider">
-                        2. Narasumber (Kanan)
-                      </span>
-                    </label>
-                    <span className="text-[10px] font-medium text-slate-500">
-                      {settings.enableSigner2 ? 'Posisi Kanan Bawah' : 'Nonaktif'}
-                    </span>
-                  </div>
+                          {settings.signer1SigMode === 'TEXT' && (
+                            <div>
+                              <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                Teks Goresan Tanda Tangan Kaligrafi:
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="Ketik teks tanda tangan..."
+                                value={settings.signer1SignatureText}
+                                onChange={(e) =>
+                                  setSettings({
+                                    ...settings,
+                                    signer1SignatureText: e.target.value,
+                                  })
+                                }
+                                className="w-full px-2.5 py-1 bg-white border border-purple-200 rounded-lg text-xs italic font-serif text-[#3b2763]"
+                              />
+                            </div>
+                          )}
 
-                  {settings.enableSigner2 ? (
-                    <div className="space-y-2">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                          Nama Lengkap &amp; Gelar Narasumber
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Contoh: Dr. Aisyah Putri, M.Psi., Psikolog"
-                          value={settings.signer2Name}
-                          onChange={(e) => {
-                            const newName = e.target.value;
-                            setSettings((prev) => ({
-                              ...prev,
-                              signer2Name: newName,
-                              signer2SignatureText:
-                                prev.signer2SignatureText ===
-                                getShortSignatureName(prev.signer2Name)
-                                  ? getShortSignatureName(newName)
-                                  : prev.signer2SignatureText,
-                            }));
-                          }}
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-900 focus:outline-none focus:border-[#5e438f]"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
-                          Jabatan / Peran Narasumber
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Contoh: Narasumber & Psikolog Utama"
-                          value={settings.signer2Title}
-                          onChange={(e) =>
-                            setSettings({ ...settings, signer2Title: e.target.value })
-                          }
-                          className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-[#5e438f]"
-                        />
-                      </div>
-
-                      {/* Signature Mode & Controls for Narasumber */}
-                      <div className="pt-1 space-y-2">
-                        <label className="block text-[11px] font-semibold text-slate-700">
-                          Tanda Tangan Narasumber:
-                        </label>
-                        <div className="flex flex-wrap gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSettings({ ...settings, signer2SigMode: 'TEXT' })
-                            }
-                            className={cn(
-                              'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
-                              settings.signer2SigMode === 'TEXT'
-                                ? 'bg-[#5e438f] text-white border-[#5e438f]'
-                                : 'bg-white text-slate-700 border-slate-200 hover:bg-purple-50'
+                          {settings.signer1SigMode === 'IMAGE' &&
+                            settings.signer1SignatureDataUrl && (
+                              <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white rounded-lg border border-purple-200">
+                                <div className="flex items-center gap-2">
+                                  <img
+                                    src={settings.signer1SignatureDataUrl}
+                                    alt="TTD Penyelenggara"
+                                    className="h-8 w-auto object-contain"
+                                  />
+                                  <span className="text-[11px] text-emerald-700 font-medium">
+                                    TTD Gambar Aktif
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSettings({
+                                      ...settings,
+                                      signer1SignatureDataUrl: undefined,
+                                      signer1SigMode: 'TEXT',
+                                    })
+                                  }
+                                  className="text-[11px] text-rose-600 hover:underline font-medium cursor-pointer"
+                                >
+                                  Hapus
+                                </button>
+                              </div>
                             )}
-                          >
-                            <Type className="w-3 h-3" />
-                            <span>Kaligrafi Teks</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => setDrawingSigner(2)}
-                            className={cn(
-                              'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
-                              drawingSigner === 2 ||
-                                (settings.signer2SigMode === 'IMAGE' &&
-                                  settings.signer2SignatureDataUrl)
-                                ? 'bg-amber-600 text-white border-amber-600'
-                                : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50'
-                            )}
-                          >
-                            <PenTool className="w-3 h-3" />
-                            <span>Tulis / Gambar TTD</span>
-                          </button>
-
-                          <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 text-[11px] font-semibold cursor-pointer">
-                            <Upload className="w-3 h-3" />
-                            <span>Upload PNG</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={(e) => handleSignatureUpload(2, e)}
-                              className="sr-only"
-                            />
-                          </label>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSettings({ ...settings, signer2SigMode: 'NONE' })
-                            }
-                            className={cn(
-                              'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
-                              settings.signer2SigMode === 'NONE'
-                                ? 'bg-slate-700 text-white border-slate-700'
-                                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
-                            )}
-                            title="Kosongkan area tanda tangan untuk tanda tangan basah manual"
-                          >
-                            <Ban className="w-3 h-3" />
-                            <span>Kosong</span>
-                          </button>
                         </div>
+                      </div>
+                    </div>
 
-                        {settings.signer2SigMode === 'TEXT' && (
+                    {/* NARASUMBER (SIGNER 2 - RIGHT) */}
+                    <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200/90 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="inline-flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={settings.enableSigner2}
+                            onChange={(e) =>
+                              setSettings({ ...settings, enableSigner2: e.target.checked })
+                            }
+                            className="rounded text-[#5e438f]"
+                          />
+                          <span className="text-xs font-bold text-[#4c3575] uppercase tracking-wider">
+                            2. Narasumber (Kanan)
+                          </span>
+                        </label>
+                        <span className="text-[10px] font-medium text-slate-500">
+                          {settings.enableSigner2 ? 'Posisi Kanan Bawah' : 'Nonaktif'}
+                        </span>
+                      </div>
+
+                      {settings.enableSigner2 ? (
+                        <div className="space-y-2">
                           <div>
-                            <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
-                              Teks Goresan Tanda Tangan Kaligrafi:
+                            <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                              Nama Lengkap &amp; Gelar Narasumber
                             </label>
                             <input
                               type="text"
-                              placeholder="Ketik teks tanda tangan..."
-                              value={settings.signer2SignatureText}
-                              onChange={(e) =>
-                                setSettings({
-                                  ...settings,
-                                  signer2SignatureText: e.target.value,
-                                })
-                              }
-                              className="w-full px-2.5 py-1 bg-white border border-purple-200 rounded-lg text-xs italic font-serif text-[#3b2763]"
+                              placeholder="Contoh: Dr. Aisyah Putri, M.Psi., Psikolog"
+                              value={settings.signer2Name}
+                              onChange={(e) => {
+                                const newName = e.target.value;
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  signer2Name: newName,
+                                  signer2SignatureText:
+                                    prev.signer2SignatureText ===
+                                    getShortSignatureName(prev.signer2Name)
+                                      ? getShortSignatureName(newName)
+                                      : prev.signer2SignatureText,
+                                }));
+                              }}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-900 focus:outline-none focus:border-[#5e438f]"
                             />
                           </div>
-                        )}
 
-                        {settings.signer2SigMode === 'IMAGE' &&
-                          settings.signer2SignatureDataUrl && (
-                            <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white rounded-lg border border-purple-200">
-                              <div className="flex items-center gap-2">
-                                <img
-                                  src={settings.signer2SignatureDataUrl}
-                                  alt="TTD Narasumber"
-                                  className="h-8 w-auto object-contain"
-                                />
-                                <span className="text-[11px] text-emerald-700 font-medium">
-                                  TTD Gambar Aktif
-                                </span>
-                              </div>
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                              Jabatan / Peran Narasumber
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="Contoh: Narasumber & Psikolog Utama"
+                              value={settings.signer2Title}
+                              onChange={(e) =>
+                                setSettings({ ...settings, signer2Title: e.target.value })
+                              }
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-[#5e438f]"
+                            />
+                          </div>
+
+                          {/* Signature Mode & Controls for Narasumber */}
+                          <div className="pt-1 space-y-2">
+                            <label className="block text-[11px] font-semibold text-slate-700">
+                              Tanda Tangan Narasumber:
+                            </label>
+                            <div className="flex flex-wrap gap-1.5">
                               <button
                                 type="button"
                                 onClick={() =>
-                                  setSettings({
-                                    ...settings,
-                                    signer2SignatureDataUrl: undefined,
-                                    signer2SigMode: 'TEXT',
-                                  })
+                                  setSettings({ ...settings, signer2SigMode: 'TEXT' })
                                 }
-                                className="text-[11px] text-rose-600 hover:underline font-medium cursor-pointer"
+                                className={cn(
+                                  'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
+                                  settings.signer2SigMode === 'TEXT'
+                                    ? 'bg-[#5e438f] text-white border-[#5e438f]'
+                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-purple-50'
+                                )}
                               >
-                                Hapus
+                                <Type className="w-3 h-3" />
+                                <span>Kaligrafi Teks</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setDrawingSigner(2)}
+                                className={cn(
+                                  'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
+                                  drawingSigner === 2 ||
+                                    (settings.signer2SigMode === 'IMAGE' &&
+                                      settings.signer2SignatureDataUrl)
+                                    ? 'bg-amber-600 text-white border-amber-600'
+                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50'
+                                )}
+                              >
+                                <PenTool className="w-3 h-3" />
+                                <span>Tulis / Gambar TTD</span>
+                              </button>
+
+                              <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 text-[11px] font-semibold cursor-pointer">
+                                <Upload className="w-3 h-3" />
+                                <span>Upload PNG</span>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={(e) => handleSignatureUpload(2, e)}
+                                  className="sr-only"
+                                />
+                              </label>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSettings({ ...settings, signer2SigMode: 'NONE' })
+                                }
+                                className={cn(
+                                  'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer',
+                                  settings.signer2SigMode === 'NONE'
+                                    ? 'bg-slate-700 text-white border-slate-700'
+                                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                                )}
+                                title="Kosongkan area tanda tangan untuk tanda tangan basah manual"
+                              >
+                                <Ban className="w-3 h-3" />
+                                <span>Kosong</span>
                               </button>
                             </div>
-                          )}
-                      </div>
+
+                            {settings.signer2SigMode === 'TEXT' && (
+                              <div>
+                                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                  Teks Goresan Tanda Tangan Kaligrafi:
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="Ketik teks tanda tangan..."
+                                  value={settings.signer2SignatureText}
+                                  onChange={(e) =>
+                                    setSettings({
+                                      ...settings,
+                                      signer2SignatureText: e.target.value,
+                                    })
+                                  }
+                                  className="w-full px-2.5 py-1 bg-white border border-purple-200 rounded-lg text-xs italic font-serif text-[#3b2763]"
+                                />
+                              </div>
+                            )}
+
+                            {settings.signer2SigMode === 'IMAGE' &&
+                              settings.signer2SignatureDataUrl && (
+                                <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white rounded-lg border border-purple-200">
+                                  <div className="flex items-center gap-2">
+                                    <img
+                                      src={settings.signer2SignatureDataUrl}
+                                      alt="TTD Narasumber"
+                                      className="h-8 w-auto object-contain"
+                                    />
+                                    <span className="text-[11px] text-emerald-700 font-medium">
+                                      TTD Gambar Aktif
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSettings({
+                                        ...settings,
+                                        signer2SignatureDataUrl: undefined,
+                                        signer2SigMode: 'TEXT',
+                                      })
+                                    }
+                                    className="text-[11px] text-rose-600 hover:underline font-medium cursor-pointer"
+                                  >
+                                    Hapus
+                                  </button>
+                                </div>
+                              )}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500 py-6 text-center">
+                          Centang kotak di atas jika ingin menampilkan nama &amp; tanda tangan
+                          Narasumber pada E-Sertifikat.
+                        </p>
+                      )}
                     </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 py-6 text-center">
-                      Centang kotak di atas jika ingin menampilkan nama &amp; tanda tangan
-                      Narasumber pada E-Sertifikat.
-                    </p>
-                  )}
-                </div>
-              </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -1459,8 +1632,9 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
 
             <div className="flex-1 overflow-y-auto divide-y divide-slate-100 max-h-64 lg:max-h-none">
               {targetList.length > 0 ? (
-                targetList.map((p, idx) => {
+                targetList.map((p) => {
                   const isSelected = activeParticipant.id === p.id;
+                  const canonicalIdx = getCanonicalParticipantSeqIndex(p.id, participants);
                   const cleanPhone = normalizeWhatsAppPhone(p.phone);
                   const waHref = cleanPhone
                     ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(buildCertificateWaMessage(p))}`
@@ -1478,7 +1652,7 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="text-[11px] font-mono font-bold text-[#5e438f]">
-                            #{String(idx + 1).padStart(2, '0')}
+                            #{String(canonicalIdx + 1).padStart(3, '0')}
                           </span>
                           <p className="text-xs sm:text-sm font-semibold text-slate-900 truncate">
                             {p.name}
@@ -1496,7 +1670,7 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                           rel="noopener noreferrer"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleSendCertificateWa(p, idx);
+                            handleSendCertificateWa(p, canonicalIdx);
                           }}
                           title="Kirim E-Sertifikat via WhatsApp & otomatis salin gambar sertifikat ke Clipboard (Ctrl+V)"
                           className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 transition-colors"
@@ -1508,7 +1682,7 @@ export const CertificateModal: React.FC<CertificateModalProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            void handleDownloadSinglePng(p, idx);
+                            void handleDownloadSinglePng(p, canonicalIdx);
                           }}
                           title="Unduh E-Sertifikat PNG peserta ini"
                           className="p-1.5 rounded-lg bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200/80 transition-colors cursor-pointer"

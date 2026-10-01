@@ -164,6 +164,207 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    // Validation Blueprint: CertificateSettings
+    function isValidCertificateSettings(data) {
+      return data.keys().hasAll([
+          'settingsId',
+          'workshopId',
+          'ownerId',
+          'organizerHeader',
+          'certTitle',
+          'certSubtitle',
+          'numberSuffix',
+          'city',
+          'bodyIntro',
+          'signer1Label',
+          'signer1Name',
+          'signer1Title',
+          'signer1SigMode',
+          'signer1SignatureText',
+          'signer1SignatureDataUrl',
+          'enableSigner2',
+          'signer2Name',
+          'signer2Title',
+          'signer2SigMode',
+          'signer2SignatureText',
+          'signer2SignatureDataUrl',
+          'customTemplateDataUrl',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'settingsId',
+          'workshopId',
+          'ownerId',
+          'organizerHeader',
+          'certTitle',
+          'certSubtitle',
+          'numberSuffix',
+          'city',
+          'bodyIntro',
+          'signer1Label',
+          'signer1Name',
+          'signer1Title',
+          'signer1SigMode',
+          'signer1SignatureText',
+          'signer1SignatureDataUrl',
+          'enableSigner2',
+          'signer2Name',
+          'signer2Title',
+          'signer2SigMode',
+          'signer2SignatureText',
+          'signer2SignatureDataUrl',
+          'customTemplateDataUrl',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.settingsId is string
+        && data.settingsId.size() >= 1
+        && data.settingsId.size() <= 64
+        && data.settingsId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.workshopId is string
+        && data.workshopId.size() >= 1
+        && data.workshopId.size() <= 64
+        && data.workshopId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.organizerHeader is string
+        && data.organizerHeader.size() <= 160
+        && data.certTitle is string
+        && data.certTitle.size() >= 1
+        && data.certTitle.size() <= 120
+        && data.certSubtitle is string
+        && data.certSubtitle.size() >= 1
+        && data.certSubtitle.size() <= 160
+        && data.numberSuffix is string
+        && data.numberSuffix.size() >= 1
+        && data.numberSuffix.size() <= 80
+        && data.city is string
+        && data.city.size() >= 1
+        && data.city.size() <= 80
+        && data.bodyIntro is string
+        && data.bodyIntro.size() >= 1
+        && data.bodyIntro.size() <= 300
+        && data.signer1Label is string
+        && data.signer1Label.size() >= 1
+        && data.signer1Label.size() <= 120
+        && data.signer1Name is string
+        && data.signer1Name.size() >= 1
+        && data.signer1Name.size() <= 160
+        && data.signer1Title is string
+        && data.signer1Title.size() >= 1
+        && data.signer1Title.size() <= 160
+        && data.signer1SigMode is string
+        && (data.signer1SigMode == 'TEXT' || data.signer1SigMode == 'IMAGE' || data.signer1SigMode == 'NONE')
+        && data.signer1SignatureText is string
+        && data.signer1SignatureText.size() <= 100
+        && data.signer1SignatureDataUrl is string
+        && data.signer1SignatureDataUrl.size() <= 150000
+        && data.enableSigner2 is bool
+        && data.signer2Name is string
+        && data.signer2Name.size() <= 160
+        && data.signer2Title is string
+        && data.signer2Title.size() <= 160
+        && data.signer2SigMode is string
+        && (data.signer2SigMode == 'TEXT' || data.signer2SigMode == 'IMAGE' || data.signer2SigMode == 'NONE')
+        && data.signer2SignatureText is string
+        && data.signer2SignatureText.size() <= 100
+        && data.signer2SignatureDataUrl is string
+        && data.signer2SignatureDataUrl.size() <= 150000
+        && data.customTemplateDataUrl is string
+        && data.customTemplateDataUrl.size() <= 450000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: ParticipantFeedback
+    function isValidFeedback(data) {
+      return data.keys().hasAll([
+          'feedbackId',
+          'workshopId',
+          'ownerId',
+          'participantId',
+          'participantName',
+          'institution',
+          'overallRating',
+          'speakerRating',
+          'facilityRating',
+          'takeaway',
+          'suggestedTopic',
+          'recommendation',
+          'submittedAt',
+          'certificateClaimed',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'feedbackId',
+          'workshopId',
+          'ownerId',
+          'participantId',
+          'participantName',
+          'institution',
+          'overallRating',
+          'speakerRating',
+          'facilityRating',
+          'takeaway',
+          'suggestedTopic',
+          'recommendation',
+          'submittedAt',
+          'certificateClaimed',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.feedbackId is string
+        && data.feedbackId.size() >= 1
+        && data.feedbackId.size() <= 64
+        && data.feedbackId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.workshopId is string
+        && data.workshopId.size() >= 1
+        && data.workshopId.size() <= 64
+        && data.workshopId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.participantId is string
+        && data.participantId.size() >= 1
+        && data.participantId.size() <= 64
+        && data.participantId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.participantName is string
+        && data.participantName.size() >= 1
+        && data.participantName.size() <= 160
+        && data.institution is string
+        && data.institution.size() >= 1
+        && data.institution.size() <= 160
+        && data.overallRating is int
+        && data.overallRating >= 1
+        && data.overallRating <= 5
+        && data.speakerRating is int
+        && data.speakerRating >= 1
+        && data.speakerRating <= 5
+        && data.facilityRating is int
+        && data.facilityRating >= 1
+        && data.facilityRating <= 5
+        && data.takeaway is string
+        && data.takeaway.size() >= 1
+        && data.takeaway.size() <= 1000
+        && data.suggestedTopic is string
+        && data.suggestedTopic.size() <= 300
+        && data.recommendation is string
+        && (data.recommendation == 'Sangat Merekomendasikan' || data.recommendation == 'Merekomendasikan' || data.recommendation == 'Cukup')
+        && data.submittedAt is string
+        && data.submittedAt.size() >= 1
+        && data.submittedAt.size() <= 64
+        && data.certificateClaimed is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // Collection: /workshops/{workshopId}
     match /workshops/{workshopId} {
       // Single-document get for verified staff and Admin (no collection list needed)
@@ -217,7 +418,7 @@ service cloud.firestore {
         allow list: if isVerifiedUser()
           && existing().workshopId == workshopId;
 
-        // Only Admin can create new participants (or initial atomic bootstrap when 'main' does not exist yet)
+        // Admin can create any participant, or Verified Participant can self-register (status == PENDING)
         allow create: if isVerifiedUser()
           && isValidId(workshopId)
           && isValidId(participantId)
@@ -228,6 +429,11 @@ service cloud.firestore {
           && incoming().updatedAt == request.time
           && (
             isAdmin()
+            || (
+              exists(/databases/$(database)/documents/workshops/$(workshopId))
+              && incoming().status == 'PENDING'
+              && incoming().checkInTime == ''
+            )
             || (
               workshopId == 'main'
               && !exists(/databases/$(database)/documents/workshops/main)
@@ -281,6 +487,133 @@ service cloud.firestore {
         allow delete: if isAdmin()
           && isValidId(workshopId)
           && isValidId(participantId)
+          && exists(/databases/$(database)/documents/workshops/$(workshopId));
+      }
+
+      // Subcollection: /workshops/{workshopId}/certificateSettings/{settingsId}
+      match /certificateSettings/{settingsId} {
+        allow get: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(settingsId)
+          && (resource == null || existing().workshopId == workshopId);
+
+        // Only Admin can create certificate settings (or initial atomic bootstrap of 'main')
+        allow create: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(settingsId)
+          && isValidCertificateSettings(incoming())
+          && incoming().settingsId == settingsId
+          && incoming().workshopId == workshopId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (
+            (
+              isAdmin()
+              && (
+                exists(/databases/$(database)/documents/workshops/$(workshopId))
+                || getAfter(/databases/$(database)/documents/workshops/$(workshopId)).data.workshopId == workshopId
+              )
+            )
+            || (
+              workshopId == 'main'
+              && !exists(/databases/$(database)/documents/workshops/main)
+              && getAfter(/databases/$(database)/documents/workshops/main).data.workshopId == 'main'
+            )
+          );
+
+        // Only Admin can update certificate settings
+        allow update: if isAdmin()
+          && isValidId(workshopId)
+          && isValidId(settingsId)
+          && isValidCertificateSettings(incoming())
+          && incoming().settingsId == existing().settingsId
+          && incoming().workshopId == existing().workshopId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/workshops/$(workshopId))
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'ownerId',
+            'organizerHeader',
+            'certTitle',
+            'certSubtitle',
+            'numberSuffix',
+            'city',
+            'bodyIntro',
+            'signer1Label',
+            'signer1Name',
+            'signer1Title',
+            'signer1SigMode',
+            'signer1SignatureText',
+            'signer1SignatureDataUrl',
+            'enableSigner2',
+            'signer2Name',
+            'signer2Title',
+            'signer2SigMode',
+            'signer2SignatureText',
+            'signer2SignatureDataUrl',
+            'customTemplateDataUrl',
+            'updatedAt'
+          ]);
+
+        // Only Admin can delete certificate settings
+        allow delete: if isAdmin()
+          && isValidId(workshopId)
+          && isValidId(settingsId)
+          && exists(/databases/$(database)/documents/workshops/$(workshopId));
+      }
+
+      // Subcollection: /workshops/{workshopId}/feedbacks/{feedbackId}
+      match /feedbacks/{feedbackId} {
+        allow get: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(feedbackId)
+          && (resource == null || existing().workshopId == workshopId);
+
+        allow list: if isVerifiedUser()
+          && existing().workshopId == workshopId;
+
+        // Verified users can submit post-workshop evaluation & claim certificate
+        allow create: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(feedbackId)
+          && isValidFeedback(incoming())
+          && incoming().feedbackId == feedbackId
+          && incoming().participantId == feedbackId
+          && incoming().workshopId == workshopId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/workshops/$(workshopId));
+
+        // Owner or Admin can update feedback
+        allow update: if isVerifiedUser()
+          && isValidId(workshopId)
+          && isValidId(feedbackId)
+          && isValidFeedback(incoming())
+          && incoming().feedbackId == existing().feedbackId
+          && incoming().participantId == existing().participantId
+          && incoming().workshopId == existing().workshopId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/workshops/$(workshopId))
+          && (isAdmin() || existing().ownerId == request.auth.uid)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'ownerId',
+            'participantName',
+            'institution',
+            'overallRating',
+            'speakerRating',
+            'facilityRating',
+            'takeaway',
+            'suggestedTopic',
+            'recommendation',
+            'submittedAt',
+            'certificateClaimed',
+            'updatedAt'
+          ]);
+
+        allow delete: if isAdmin()
+          && isValidId(workshopId)
+          && isValidId(feedbackId)
           && exists(/databases/$(database)/documents/workshops/$(workshopId));
       }
     }

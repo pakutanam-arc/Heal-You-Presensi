@@ -24,15 +24,18 @@ import {
   Share2,
   ExternalLink,
   Award,
+  Sparkles,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
   buildWhatsAppUrl,
   buildWhatsAppMessage,
   buildDigitalTicketUrl,
+  buildParticipantPortalUrl,
   copyParticipantCardToClipboard,
   shareParticipantCardFile,
 } from '../lib/whatsapp';
+import { buildSignedParticipantQrValue } from '../lib/qrSecurity';
 import { format } from 'date-fns';
 import { HealYouLogo, HEAL_YOU_DATA_URI, loadLogoImage } from './HealYouLogo';
 import { BatchPrintModal } from './BatchPrintModal';
@@ -117,10 +120,12 @@ function wrapCanvasLines(
 
 export const Registration: React.FC<{
   onPreviewDigitalTicket?: (participant: Participant) => void;
-}> = ({ onPreviewDigitalTicket }) => {
+  onOpenParticipantPortal?: (tab?: 'register' | 'certificate') => void;
+}> = ({ onPreviewDigitalTicket, onOpenParticipantPortal }) => {
   const {
     participants,
     config,
+    activeWorkshopId,
     selectedParticipantId: selectedId,
     setSelectedParticipantId: setSelectedId,
     registerParticipant,
@@ -129,6 +134,8 @@ export const Registration: React.FC<{
     deleteParticipant,
     updateConfig,
   } = useAppContext();
+
+  const [copiedSelfRegLink, setCopiedSelfRegLink] = useState(false);
 
   const selectedParticipant =
     participants.find((p) => p.id === selectedId) || participants[0] || null;
@@ -889,6 +896,69 @@ export const Registration: React.FC<{
     <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* Left Column: Unified Editor & Participant Directory */}
       <div className="lg:col-span-7 flex flex-col gap-6" ref={editorPanelRef}>
+        {/* Self-Registration Link Card for Participants */}
+        <div className="bg-white rounded-2xl border border-purple-200/80 shadow-xs p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-purple-900 text-white flex items-center justify-center shrink-0 mt-0.5">
+              <Share2 className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Link Formulir Pendaftaran Mandiri Peserta
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800">
+                  Akses Khusus Peserta
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Bagikan link ini agar peserta dapat mendaftar sendiri, mengunduh Kartu QR, serta{' '}
+                <strong>scan cek &amp; klaim E-Sertifikat</strong> setelah acara.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={async () => {
+                const url = buildParticipantPortalUrl(activeWorkshopId, config, 'register');
+                try {
+                  await navigator.clipboard.writeText(url);
+                  setCopiedSelfRegLink(true);
+                  window.setTimeout(() => setCopiedSelfRegLink(false), 2500);
+                } catch {
+                  // Ignore
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-purple-900 hover:bg-purple-950 text-white transition-all cursor-pointer"
+            >
+              {copiedSelfRegLink ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-300" />
+                  Tautan Disalin!
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  Salin Link Pendaftaran
+                </>
+              )}
+            </button>
+
+            {onOpenParticipantPortal && (
+              <button
+                type="button"
+                onClick={() => onOpenParticipantPortal('register')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-purple-50 hover:bg-purple-100 text-purple-950 border border-purple-200 transition-all cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-purple-700" />
+                Pratinjau Halaman Peserta
+              </button>
+            )}
+          </div>
+        </div>
+
         <div className="bg-white rounded-2xl border border-purple-100 shadow-xs overflow-hidden">
           <div
             className="p-5 border-b border-purple-100/80"
@@ -1849,7 +1919,7 @@ export const Registration: React.FC<{
                   <div className="mt-4 relative p-3 bg-white rounded-2xl border border-[#dcd0ff] shadow-2xs flex items-center justify-center">
                     <div ref={qrContainerRef} className="relative flex items-center justify-center">
                       <QRCodeCanvas
-                        value={displayParticipantId}
+                        value={buildSignedParticipantQrValue(displayParticipantId, activeWorkshopId)}
                         size={320}
                         level="H"
                         minVersion={4}

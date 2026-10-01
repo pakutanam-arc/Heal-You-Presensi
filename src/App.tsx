@@ -3,12 +3,27 @@ import { QRCodeCanvas } from 'qrcode.react';
 import { AppProvider, useAppContext } from './store';
 import { Participant } from './types';
 import { Dashboard } from './components/Dashboard';
-import { Scanner } from './components/Scanner';
+import { Scanner, ScannerPurpose } from './components/Scanner';
+import {
+  CertificateVerificationPanel,
+  resolveCertificateVerification,
+  VerificationLookupResult,
+} from './components/CertificateVerificationPanel';
 import { Registration } from './components/Registration';
 import { WelcomeDisplay } from './components/WelcomeDisplay';
 import { DigitalTicketView } from './components/DigitalTicketView';
+import { ParticipantPortalView } from './components/ParticipantPortalView';
+import { LoginView } from './components/LoginView';
 import { HealYouLogo } from './components/HealYouLogo';
-import { parseDigitalTicketFromUrl } from './lib/whatsapp';
+import {
+  parseDigitalTicketFromUrl,
+  parseParticipantPortalFromUrl,
+} from './lib/whatsapp';
+import {
+  buildCertificateVerificationUrl,
+  getCanonicalParticipantSeqIndex,
+} from './lib/certificateRenderer';
+import { buildSignedParticipantQrValue } from './lib/qrSecurity';
 import {
   LayoutDashboard,
   Calendar,
@@ -30,6 +45,8 @@ import {
   Trash2,
   ChevronDown,
   Tv,
+  ShieldCheck,
+  Share2,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
@@ -49,6 +66,7 @@ function AppContent() {
   const {
     participants,
     config,
+    certificateSettings,
     eventsList,
     activeWorkshopId,
     switchWorkshop,
@@ -60,16 +78,79 @@ function AppContent() {
     resetAttendance,
     resetData,
     cloudUser,
+    authSession,
+    isAuthenticated,
     isAdmin,
     canManageParticipants,
     isCloudSyncing,
+    logoutApp,
     connectCloud,
     disconnectCloud,
   } = useAppContext();
+  const [isPublicRegistrationOpen, setIsPublicRegistrationOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<
     'dashboard' | 'scanner' | 'welcome' | 'registration'
-  >('dashboard');
+  >(() => {
+    if (typeof window !== 'undefined' && window.location.search.includes('verify_cert=')) {
+      return 'scanner';
+    }
+    return 'dashboard';
+  });
+  const [scannerPurpose, setScannerPurpose] = useState<ScannerPurpose>(() => {
+    if (typeof window !== 'undefined' && window.location.search.includes('verify_cert=')) {
+      return 'verify_cert';
+    }
+    return 'checkin';
+  });
+  const [certVerificationTarget, setCertVerificationTarget] =
+    useState<VerificationLookupResult | null>(null);
   const [digitalTicketData, setDigitalTicketData] = useState(() => parseDigitalTicketFromUrl());
+  const [participantPortalUrlData] = useState(() => parseParticipantPortalFromUrl());
+  const [adminPortalPreview, setAdminPortalPreview] = useState<'register' | 'certificate' | null>(
+    null
+  );
+
+  // Switch to the target workshop event if opened via ?portal=peserta&evt=...
+  useEffect(() => {
+    if (
+      participantPortalUrlData?.workshopId &&
+      participantPortalUrlData.workshopId !== activeWorkshopId
+    ) {
+      switchWorkshop(participantPortalUrlData.workshopId);
+    }
+  }, [participantPortalUrlData]);
+
+  const handleTriggerCertificateVerification = (rawCodeOrId: string) => {
+    const result = resolveCertificateVerification(
+      rawCodeOrId,
+      participants,
+      certificateSettings.numberSuffix
+    );
+    setCertVerificationTarget(result);
+    setScannerPurpose('verify_cert');
+    setActiveTab('scanner');
+  };
+
+  // Automatically verify certificate if opened via ?verify_cert=... QR link
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const verifyCertParam = params.get('verify_cert');
+    if (verifyCertParam) {
+      const evtParam = params.get('evt');
+      if (evtParam && evtParam !== activeWorkshopId) {
+        switchWorkshop(evtParam);
+      }
+      const result = resolveCertificateVerification(
+        window.location.href,
+        participants,
+        certificateSettings.numberSuffix
+      );
+      setCertVerificationTarget(result);
+      setScannerPurpose('verify_cert');
+      setActiveTab('scanner');
+    }
+  }, [participants.length, certificateSettings.numberSuffix]);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [isEventsMenuOpen, setIsEventsMenuOpen] = useState(false);
   const [isCreatingNewEvent, setIsCreatingNewEvent] = useState(false);
@@ -217,24 +298,66 @@ function AppContent() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#faf9fe]">
-      {/* Hidden QR Code Canvas Registry so any participant's PNG ID Card can be generated & copied to Clipboard anywhere */}
+      {/* Hidden QR Code Canvas Registry so any participant's PNG ID Card & E-Certificate can be generated anywhere */}
       <div className="sr-only pointer-events-none" aria-hidden="true">
         {participants.map((p) => (
-          <QRCodeCanvas
-            key={p.id}
-            id={`global-qr-${p.id}`}
-            value={p.id}
-            size={320}
-            level="H"
-            minVersion={4}
-            marginSize={2}
-            fgColor="#261742"
-            bgColor="#ffffff"
-          />
+          <React.Fragment key={p.id}>
+            <QRCodeCanvas
+              id={`global-qr-${p.id}`}
+              value={buildSignedParticipantQrValue(p.id, activeWorkshopId)}
+              size={320}
+              level="H"
+              minVersion={4}
+              marginSize={2}
+              fgColor="#261742"
+              bgColor="#ffffff"
+            />
+            <QRCodeCanvas
+              id={`global-cert-qr-${p.id}`}
+              value={buildCertificateVerificationUrl(
+                p,
+                getCanonicalParticipantSeqIndex(p.id, participants),
+                activeWorkshopId
+              )}
+              size={320}
+              level="M"
+              marginSize={2}
+              fgColor="#261742"
+              bgColor="#ffffff"
+            />
+          </React.Fragment>
         ))}
       </div>
 
-      {digitalTicketData ? (
+      {participantPortalUrlData ? (
+        <ParticipantPortalView
+          initialTab={participantPortalUrlData.initialTab}
+          configFallback={participantPortalUrlData.configFallback}
+          isAdminPreview={false}
+        />
+      ) : isPublicRegistrationOpen && !isAuthenticated ? (
+        <div className="relative min-h-screen flex flex-col">
+          <ParticipantPortalView initialTab="register" isAdminPreview={false} />
+          <div className="fixed bottom-4 right-4 z-50">
+            <button
+              type="button"
+              onClick={() => setIsPublicRegistrationOpen(false)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-[#2b1b47]/95 hover:bg-[#2b1b47] text-white shadow-lg border border-purple-300/30 transition-all cursor-pointer"
+            >
+              <ShieldCheck className="w-4 h-4 text-amber-300" />
+              <span>Login Admin / Panitia</span>
+            </button>
+          </div>
+        </div>
+      ) : !isAuthenticated ? (
+        <LoginView onOpenPublicRegistration={() => setIsPublicRegistrationOpen(true)} />
+      ) : adminPortalPreview && canManageParticipants ? (
+        <ParticipantPortalView
+          initialTab={adminPortalPreview}
+          isAdminPreview={true}
+          onExitAdminPreview={() => setAdminPortalPreview(null)}
+        />
+      ) : digitalTicketData ? (
         <DigitalTicketView
           participant={
             participants.find((p) => p.id === digitalTicketData.participant.id) ||
@@ -317,19 +440,30 @@ function AppContent() {
                 Layar TV
               </button>
               {canManageParticipants && (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('registration')}
-                  className={cn(
-                    'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
-                    activeTab === 'registration'
-                      ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  )}
-                >
-                  <UserPlus className="w-4 h-4 text-[#5e438f]" />
-                  Kartu Pengenal &amp; Buat QR
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('registration')}
+                    className={cn(
+                      'flex items-center gap-2 px-3 py-1.5 text-xs xl:text-sm font-medium rounded-lg transition-colors cursor-pointer',
+                      activeTab === 'registration'
+                        ? 'bg-white text-[#2b1b47] shadow-2xs font-semibold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    )}
+                  >
+                    <UserPlus className="w-4 h-4 text-[#5e438f]" />
+                    Kartu Pengenal &amp; Buat QR
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdminPortalPreview('register')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs xl:text-sm font-semibold rounded-lg text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 transition-colors cursor-pointer"
+                    title="Buka Halaman Pendaftaran Mandiri & Klaim Sertifikat Khusus Peserta"
+                  >
+                    <Share2 className="w-3.5 h-3.5 text-emerald-700" />
+                    Portal Peserta
+                  </button>
+                </>
               )}
             </nav>
           </div>
@@ -419,41 +553,8 @@ function AppContent() {
               </button>
             </div>
 
-            {/* Cloud Real-Time Sync Control */}
-            {cloudUser ? (
-              <div
-                className={cn(
-                  'flex items-center gap-1.5 border px-2.5 py-1.5 rounded-xl text-xs font-medium shrink-0',
-                  isAdmin
-                    ? 'bg-emerald-50 border-emerald-200/90 text-emerald-800'
-                    : 'bg-purple-50 border-purple-200/90 text-[#4c3575]'
-                )}
-                title={
-                  isAdmin
-                    ? `Admin (${cloudUser.email}) - Akses Penuh`
-                    : `Panitia (${cloudUser.email}) - Akses Dashboard & Scanner QR`
-                }
-              >
-                <span
-                  className={cn(
-                    'w-2 h-2 rounded-full animate-pulse',
-                    isAdmin ? 'bg-emerald-500' : 'bg-[#5e438f]'
-                  )}
-                />
-                <span className="font-semibold">{isAdmin ? 'Admin' : 'Panitia'}</span>
-                <span className="hidden 2xl:inline max-w-[120px] truncate opacity-85">
-                  · {cloudUser.email}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void disconnectCloud()}
-                  title="Putuskan sinkronisasi Cloud (Keluar)"
-                  className="ml-0.5 p-0.5 hover:text-rose-600 rounded transition-colors cursor-pointer"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ) : (
+            {/* Active User Role Badge & Cloud Sync / Logout Controls */}
+            {isAdmin && !cloudUser && (
               <button
                 type="button"
                 onClick={async () => {
@@ -465,14 +566,53 @@ function AppContent() {
                   }
                 }}
                 className="flex items-center gap-1.5 text-xs font-semibold text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/80 px-2.5 py-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
-                title="Login Google untuk sinkronisasi real-time antar HP & Laptop"
+                title="Sinkronkan dengan Google Cloud (paku.tanam@gmail.com)"
               >
                 <Cloud className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">
-                  {isCloudSyncing ? 'Menghubungkan...' : 'Sinkronisasi Cloud'}
+                  {isCloudSyncing ? 'Menghubungkan...' : 'Cloud Sync'}
                 </span>
               </button>
             )}
+
+            <div
+              className={cn(
+                'flex items-center gap-1.5 border px-2.5 py-1.5 rounded-xl text-xs font-medium shrink-0',
+                isAdmin
+                  ? 'bg-emerald-50 border-emerald-200/90 text-emerald-800'
+                  : 'bg-purple-50 border-purple-200/90 text-[#4c3575]'
+              )}
+              title={
+                isAdmin
+                  ? `Admin (${authSession?.identifier}) - Akses Penuh`
+                  : `${authSession?.displayName || 'Panitia'} - Akses Dashboard Kehadiran, Scanner & Layar TV`
+              }
+            >
+              <span
+                className={cn(
+                  'w-2 h-2 rounded-full animate-pulse',
+                  isAdmin ? 'bg-emerald-500' : 'bg-[#5e438f]'
+                )}
+              />
+              <span className="font-semibold">
+                {isAdmin ? 'Admin' : authSession?.displayName || 'Panitia'}
+              </span>
+              <span className="hidden 2xl:inline max-w-[140px] truncate opacity-85">
+                {isAdmin ? `· ${authSession?.identifier}` : '· Presensi & TV'}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsPublicRegistrationOpen(false);
+                  void logoutApp();
+                }}
+                title="Keluar (Logout) dari akun saat ini"
+                className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 bg-white/80 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 rounded-md transition-colors cursor-pointer text-[11px] font-semibold"
+              >
+                <LogOut className="w-3 h-3" />
+                <span>Keluar</span>
+              </button>
+            </div>
 
             {/* Reset Data Button (Only visible when canManageParticipants is true) */}
             {canManageParticipants && (
@@ -904,6 +1044,7 @@ function AppContent() {
               onPreviewDigitalTicket={(p: Participant) =>
                 setDigitalTicketData({ participant: p, config })
               }
+              onOpenParticipantPortal={(tab) => setAdminPortalPreview(tab || 'register')}
             />
           </div>
         )}
@@ -921,198 +1062,279 @@ function AppContent() {
                       }
                     : undefined
                 }
+                onOpenParticipantPortal={(tab) => setAdminPortalPreview(tab || 'register')}
               />
             </div>
 
             <div className="hidden lg:block lg:w-[350px] xl:w-[380px] shrink-0 lg:sticky lg:top-20">
-              <Scanner />
+              <Scanner
+                scannerPurpose={scannerPurpose}
+                onScannerPurposeChange={setScannerPurpose}
+                onVerifyCertificate={handleTriggerCertificateVerification}
+              />
             </div>
           </div>
         )}
 
-        {/* VIEW 3: FULL CHECK-IN KIOSK VIEW (SCANNER + LIVE CHECK-IN MONITOR) */}
+        {/* VIEW 3: FULL CHECK-IN KIOSK & CERTIFICATE VERIFICATION VIEW */}
         {activeTab === 'scanner' && (
           <div className="flex-1 flex flex-col lg:flex-row gap-6 items-start">
             {/* Left Column: Dedicated QR Scanner */}
             <div className="w-full max-w-md mx-auto lg:max-w-none lg:w-[380px] xl:w-[410px] shrink-0 lg:sticky lg:top-20">
-              <Scanner />
+              <Scanner
+                scannerPurpose={scannerPurpose}
+                onScannerPurposeChange={setScannerPurpose}
+                onVerifyCertificate={handleTriggerCertificateVerification}
+              />
             </div>
 
-            {/* Right Column: Live Check-in Activity Feed & Kiosk Monitor */}
-            <div className="flex-1 min-w-0 bg-white rounded-2xl shadow-xs border border-purple-100 overflow-hidden flex flex-col">
-              <div className="p-5 border-b border-slate-100">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-purple-50 text-[#5e438f] flex items-center justify-center shrink-0">
-                      <Activity className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-bold text-slate-900">
-                        Monitor Kehadiran &amp; Riwayat Check-in
-                      </h2>
-                      <p className="text-xs text-slate-500">
-                        Pembaruan langsung saat peserta memindai Kartu Tanda Pengenal di meja registrasi
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    {kioskData.checkedIn.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setIsConfirmingReset(true)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-xs font-semibold text-rose-700 transition-colors cursor-pointer"
-                        title="Reset status kehadiran seluruh peserta"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>Reset Kehadiran</span>
-                      </button>
+            {/* Right Column: Switchable between Live Check-in Monitor & Certificate Verification Page */}
+            <div className="flex-1 min-w-0 w-full space-y-4">
+              {/* Top Mode Switcher Bar inside Menu Scanner */}
+              <div className="bg-white p-2 rounded-2xl shadow-xs border border-purple-100 flex flex-wrap items-center justify-between gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 flex-1 p-1 bg-slate-100/90 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setScannerPurpose('checkin')}
+                    className={cn(
+                      'flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer',
+                      scannerPurpose === 'checkin'
+                        ? 'bg-white text-[#2b1b47] shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
                     )}
-                    <span className="px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-100 text-xs font-semibold text-[#4c3575]">
-                      {kioskData.checkedIn.length} / {kioskData.total} Hadir ({kioskData.rate}%)
-                    </span>
-                  </div>
-                </div>
+                  >
+                    <Activity className="w-4 h-4 text-[#5e438f] shrink-0" />
+                    <span>Monitor Kehadiran &amp; Riwayat Check-in</span>
+                  </button>
 
-                {/* Progress Bar */}
-                <div className="mt-4">
-                  <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden flex">
-                    <div
-                      className="bg-emerald-500 transition-all duration-300"
-                      style={{
-                        width: `${kioskData.total > 0 ? (kioskData.presentCount / kioskData.total) * 100 : 0}%`,
-                      }}
-                      title={`Hadir Tepat Waktu: ${kioskData.presentCount}`}
+                  <button
+                    type="button"
+                    onClick={() => setScannerPurpose('verify_cert')}
+                    className={cn(
+                      'flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer',
+                      scannerPurpose === 'verify_cert'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    )}
+                  >
+                    <ShieldCheck
+                      className={cn(
+                        'w-4 h-4 shrink-0',
+                        scannerPurpose === 'verify_cert' ? 'text-white' : 'text-amber-600'
+                      )}
                     />
-                    <div
-                      className="bg-amber-400 transition-all duration-300"
-                      style={{
-                        width: `${kioskData.total > 0 ? (kioskData.lateCount / kioskData.total) * 100 : 0}%`,
-                      }}
-                      title={`Hadir Terlambat: ${kioskData.lateCount}`}
-                    />
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                    <div className="flex items-center gap-4">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                        Tepat Waktu: <strong className="text-slate-700">{kioskData.presentCount}</strong>
-                      </span>
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-amber-400" />
-                        Terlambat: <strong className="text-slate-700">{kioskData.lateCount}</strong>
-                      </span>
-                    </div>
-                    <span>
-                      Belum Hadir: <strong className="text-slate-700">{kioskData.pending.length}</strong>
-                    </span>
-                  </div>
+                    <span>Halaman Verifikasi Keaslian E-Sertifikat</span>
+                  </button>
                 </div>
               </div>
 
-              {/* Recent Check-ins List */}
-              <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
-                {kioskData.checkedIn.length > 0 ? (
-                  kioskData.checkedIn.map((p) => (
-                    <div
-                      key={p.id}
-                      className="px-5 py-3.5 flex items-center justify-between gap-4 hover:bg-purple-50/30 transition-colors"
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div
-                          className={cn(
-                            'w-9 h-9 rounded-xl flex items-center justify-center shrink-0',
-                            p.status === 'PRESENT'
-                              ? 'bg-emerald-50 text-emerald-600'
-                              : 'bg-amber-50 text-amber-600'
-                          )}
-                        >
-                          {p.status === 'PRESENT' ? (
-                            <CheckCircle2 className="w-4 h-4" />
-                          ) : (
-                            <Clock className="w-4 h-4" />
-                          )}
+              {scannerPurpose === 'verify_cert' ? (
+                <CertificateVerificationPanel
+                  verificationTarget={certVerificationTarget}
+                  onSelectVerificationTarget={handleTriggerCertificateVerification}
+                  onClearVerification={() => {
+                    setCertVerificationTarget(null);
+                    if (
+                      typeof window !== 'undefined' &&
+                      window.location.search.includes('verify_cert=')
+                    ) {
+                      window.history.replaceState({}, '', window.location.pathname);
+                    }
+                  }}
+                />
+              ) : (
+                <div className="bg-white rounded-2xl shadow-xs border border-purple-100 overflow-hidden flex flex-col">
+                  <div className="p-5 border-b border-slate-100">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-purple-50 text-[#5e438f] flex items-center justify-center shrink-0">
+                          <Activity className="w-5 h-5" />
                         </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-semibold text-slate-900 truncate">
-                              {p.name}
-                            </p>
-                            <span className="font-mono text-xs font-semibold text-[#5e438f] shrink-0">
-                              {p.id}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-500 truncate mt-0.5">
-                            {p.role || 'Peserta Workshop'} · {p.institution}
+                        <div>
+                          <h2 className="text-lg font-bold text-slate-900">
+                            Monitor Kehadiran &amp; Riwayat Check-in
+                          </h2>
+                          <p className="text-xs text-slate-500">
+                            Pembaruan langsung saat peserta memindai Kartu Tanda Pengenal di meja
+                            registrasi
                           </p>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2.5 shrink-0">
-                        <div className="text-right">
-                          <span
-                            className={cn(
-                              'inline-block px-2 py-0.5 rounded text-[11px] font-medium',
-                              p.status === 'PRESENT'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : 'bg-amber-100 text-amber-800'
-                            )}
-                          >
-                            {p.status === 'PRESENT' ? 'Tepat Waktu' : 'Terlambat'}
-                          </span>
-                          <p className="text-[11px] font-mono text-slate-400 mt-0.5">
-                            {p.checkInTime
-                              ? `${format(new Date(p.checkInTime), 'HH:mm:ss')} WIB`
-                              : '-'}
-                          </p>
-                        </div>
-
-                        {canManageParticipants && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        {canManageParticipants && kioskData.checkedIn.length > 0 && (
                           <button
                             type="button"
-                            onClick={() => {
-                              setSelectedParticipantId(p.id);
-                              setActiveTab('registration');
-                            }}
-                            title="Lihat Kartu Pengenal"
-                            className="p-2 text-[#5e438f] bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors cursor-pointer"
+                            onClick={() => setIsConfirmingReset(true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-xs font-semibold text-rose-700 transition-colors cursor-pointer"
+                            title="Reset status kehadiran seluruh peserta"
                           >
-                            <QrCode className="w-4 h-4" />
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Reset Kehadiran</span>
                           </button>
                         )}
+                        <span className="px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-100 text-xs font-semibold text-[#4c3575]">
+                          {kioskData.checkedIn.length} / {kioskData.total} Hadir ({kioskData.rate}
+                          %)
+                        </span>
                       </div>
                     </div>
-                  ))
-                ) : (
-                  <div className="p-10 text-center text-slate-500 text-sm">
-                    Belum ada peserta yang melakukan check-in. Pindai QR Code pada kartu peserta di panel kiri untuk memulai.
-                  </div>
-                )}
-              </div>
 
-              {/* Quick Pending Footer */}
-              {kioskData.pending.length > 0 && (
-                <div className="p-4 bg-slate-50/80 border-t border-slate-100 flex items-center justify-between gap-3">
-                  <span className="text-xs font-medium text-slate-600">
-                    Menunggu kehadiran: <strong>{kioskData.pending.length} peserta</strong>
-                  </span>
-                  <div className="flex items-center gap-2 overflow-x-auto max-w-md">
-                    {kioskData.pending.slice(0, 3).map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => {
-                          const res = checkIn(p.id);
-                          if (res.success) playScanBeep('success');
-                        }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 hover:border-emerald-200 rounded-lg text-xs font-medium transition-colors cursor-pointer shrink-0"
-                        title={`Check-in cepat ${p.name}`}
-                      >
-                        <UserCheck className="w-3 h-3 text-emerald-600" />
-                        <span className="font-mono text-[11px] text-[#5e438f]">{p.id}</span>
-                      </button>
-                    ))}
+                    {/* Progress Bar */}
+                    <div className="mt-4">
+                      <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden flex">
+                        <div
+                          className="bg-emerald-500 transition-all duration-300"
+                          style={{
+                            width: `${kioskData.total > 0 ? (kioskData.presentCount / kioskData.total) * 100 : 0}%`,
+                          }}
+                          title={`Hadir Tepat Waktu: ${kioskData.presentCount}`}
+                        />
+                        <div
+                          className="bg-amber-400 transition-all duration-300"
+                          style={{
+                            width: `${kioskData.total > 0 ? (kioskData.lateCount / kioskData.total) * 100 : 0}%`,
+                          }}
+                          title={`Hadir Terlambat: ${kioskData.lateCount}`}
+                        />
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                        <div className="flex items-center gap-4">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                            Tepat Waktu:{' '}
+                            <strong className="text-slate-700">{kioskData.presentCount}</strong>
+                          </span>
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-amber-400" />
+                            Terlambat:{' '}
+                            <strong className="text-slate-700">{kioskData.lateCount}</strong>
+                          </span>
+                        </div>
+                        <span>
+                          Belum Hadir:{' '}
+                          <strong className="text-slate-700">{kioskData.pending.length}</strong>
+                        </span>
+                      </div>
+                    </div>
                   </div>
+
+                  {/* Recent Check-ins List */}
+                  <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+                    {kioskData.checkedIn.length > 0 ? (
+                      kioskData.checkedIn.map((p) => (
+                        <div
+                          key={p.id}
+                          className="px-5 py-3.5 flex items-center justify-between gap-4 hover:bg-purple-50/30 transition-colors"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div
+                              className={cn(
+                                'w-9 h-9 rounded-xl flex items-center justify-center shrink-0',
+                                p.status === 'PRESENT'
+                                  ? 'bg-emerald-50 text-emerald-600'
+                                  : 'bg-amber-50 text-amber-600'
+                              )}
+                            >
+                              {p.status === 'PRESENT' ? (
+                                <CheckCircle2 className="w-4 h-4" />
+                              ) : (
+                                <Clock className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm font-semibold text-slate-900 truncate">
+                                  {p.name}
+                                </p>
+                                <span className="font-mono text-xs font-semibold text-[#5e438f] shrink-0">
+                                  {p.id}
+                                </span>
+                              </div>
+                              <p className="text-xs text-slate-500 truncate mt-0.5">
+                                {p.role || 'Peserta Workshop'} · {p.institution}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className="text-right">
+                              <span
+                                className={cn(
+                                  'inline-block px-2 py-0.5 rounded text-[11px] font-medium',
+                                  p.status === 'PRESENT'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-amber-100 text-amber-800'
+                                )}
+                              >
+                                {p.status === 'PRESENT' ? 'Tepat Waktu' : 'Terlambat'}
+                              </span>
+                              <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+                                {p.checkInTime
+                                  ? `${format(new Date(p.checkInTime), 'HH:mm:ss')} WIB`
+                                  : '-'}
+                              </p>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleTriggerCertificateVerification(p.id)}
+                              title="Verifikasi Keaslian E-Sertifikat Peserta Ini"
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
+                              <span className="hidden sm:inline">Cek Sertifikat</span>
+                            </button>
+
+                            {canManageParticipants && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedParticipantId(p.id);
+                                  setActiveTab('registration');
+                                }}
+                                title="Lihat Kartu Pengenal"
+                                className="p-2 text-[#5e438f] bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <QrCode className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-10 text-center text-slate-500 text-sm">
+                        Belum ada peserta yang melakukan check-in. Pindai QR Code pada kartu
+                        peserta di panel kiri untuk memulai.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quick Pending Footer */}
+                  {kioskData.pending.length > 0 && (
+                    <div className="p-4 bg-slate-50/80 border-t border-slate-100 flex items-center justify-between gap-3">
+                      <span className="text-xs font-medium text-slate-600">
+                        Menunggu kehadiran: <strong>{kioskData.pending.length} peserta</strong>
+                      </span>
+                      <div className="flex items-center gap-2 overflow-x-auto max-w-md">
+                        {kioskData.pending.slice(0, 3).map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              const res = checkIn(p.id);
+                              if (res.success) playScanBeep('success');
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 hover:border-emerald-200 rounded-lg text-xs font-medium transition-colors cursor-pointer shrink-0"
+                            title={`Check-in cepat ${p.name}`}
+                          >
+                            <UserCheck className="w-3 h-3 text-emerald-600" />
+                            <span className="font-mono text-[11px] text-[#5e438f]">{p.id}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

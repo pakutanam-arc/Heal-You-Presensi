@@ -2,6 +2,8 @@ import React, { useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { Participant, WorkshopConfig } from '../types';
 import { HealYouLogo } from './HealYouLogo';
+import { buildSignedParticipantQrValue } from '../lib/qrSecurity';
+import { useAppContext } from '../store';
 import {
   formatSafeDateStr,
   formatSafeTimeStr,
@@ -32,6 +34,7 @@ export const DigitalTicketView: React.FC<DigitalTicketViewProps> = ({
   config,
   onExitTicketMode,
 }) => {
+  const { activeWorkshopId } = useAppContext();
   const qrContainerRef = useRef<HTMLDivElement>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [copiedCard, setCopiedCard] = useState(false);
@@ -224,7 +227,7 @@ export const DigitalTicketView: React.FC<DigitalTicketViewProps> = ({
               <div className="mt-4 relative p-3 bg-white rounded-2xl border border-[#dcd0ff] shadow-2xs flex items-center justify-center">
                 <div ref={qrContainerRef} className="relative flex items-center justify-center">
                   <QRCodeCanvas
-                    value={participant.id}
+                    value={buildSignedParticipantQrValue(participant.id, activeWorkshopId)}
                     size={320}
                     level="H"
                     minVersion={4}

@@ -1,6 +1,20 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
-import { Participant, WorkshopConfig } from './types';
+import {
+  Participant,
+  WorkshopConfig,
+  CertificateSettings,
+  ParticipantFeedback,
+  FeedbackRecommendation,
+} from './types';
 import { INITIAL_PARTICIPANTS, WORKSHOP_CONFIG } from './data';
+import {
+  DEFAULT_CERT_SETTINGS,
+  normalizeCertificateSettings,
+} from './lib/certificateRenderer';
+import {
+  verifyScannedParticipantQr,
+  extractBaseParticipantIdFromQr,
+} from './lib/qrSecurity';
 import { isAfter } from 'date-fns';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import {
@@ -27,23 +41,105 @@ import {
 } from './firebase';
 
 export const ADMIN_EMAIL = 'paku.tanam@gmail.com';
+export const PANITIA_PASSWORD = '12345678';
+const AUTH_SESSION_STORAGE_KEY = 'healyou_auth_session_v1';
 const DEFAULT_WORKSHOP_ID = 'main';
+const CERT_SETTINGS_DOC_ID = 'config';
+
+export type AppUserRole = 'admin' | 'panitia';
+
+export interface AuthenticatedUserSession {
+  role: AppUserRole;
+  identifier: string;
+  displayName: string;
+  loggedInAt: string;
+}
+
+export const PANITIA_ACCOUNTS: Record<string, { identifier: string; displayName: string }> = {
+  panitia1: { identifier: 'panitia1', displayName: 'Panitia 1' },
+  'panitia 1': { identifier: 'panitia1', displayName: 'Panitia 1' },
+  'panitia-1': { identifier: 'panitia1', displayName: 'Panitia 1' },
+  'panitia_1': { identifier: 'panitia1', displayName: 'Panitia 1' },
+  panitia2: { identifier: 'panitia2', displayName: 'Panitia 2' },
+  'panitia 2': { identifier: 'panitia2', displayName: 'Panitia 2' },
+  'panitia-2': { identifier: 'panitia2', displayName: 'Panitia 2' },
+  'panitia_2': { identifier: 'panitia2', displayName: 'Panitia 2' },
+  panitia3: { identifier: 'panitia3', displayName: 'Panitia 3' },
+  'panitia 3': { identifier: 'panitia3', displayName: 'Panitia 3' },
+  'panitia-3': { identifier: 'panitia3', displayName: 'Panitia 3' },
+  'panitia_3': { identifier: 'panitia3', displayName: 'Panitia 3' },
+};
+
+function loadInitialAuthSession(): AuthenticatedUserSession | null {
+  try {
+    const raw = localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AuthenticatedUserSession;
+    if (
+      parsed &&
+      (parsed.role === 'admin' || parsed.role === 'panitia') &&
+      typeof parsed.identifier === 'string' &&
+      typeof parsed.displayName === 'string'
+    ) {
+      if (parsed.role === 'admin' && parsed.identifier.toLowerCase() !== ADMIN_EMAIL) {
+        return null;
+      }
+      if (
+        parsed.role === 'panitia' &&
+        !['panitia1', 'panitia2', 'panitia3'].includes(parsed.identifier.toLowerCase())
+      ) {
+        return null;
+      }
+      return parsed;
+    }
+  } catch {
+    // Ignore storage read error
+  }
+  return null;
+}
 
 export interface WorkshopEventItem {
   workshopId: string;
   config: WorkshopConfig;
   participantCount?: number;
+  certificateSettings?: CertificateSettings;
 }
 
 interface LocalSessionRecord {
   workshopId: string;
   config: WorkshopConfig;
   participants: Participant[];
+  certificateSettings: CertificateSettings;
+  feedbacks: Record<string, ParticipantFeedback>;
 }
 
 interface AppState {
   participants: Participant[];
   config: WorkshopConfig;
+  certificateSettings: CertificateSettings;
+  feedbacks: Record<string, ParticipantFeedback>;
+  submitParticipantFeedback: (data: {
+    participantId: string;
+    participantName: string;
+    institution: string;
+    overallRating: number;
+    speakerRating: number;
+    facilityRating: number;
+    takeaway: string;
+    suggestedTopic?: string;
+    recommendation: FeedbackRecommendation;
+  }) => ParticipantFeedback;
+  updateCertificateSettings: (
+    updates:
+      | Partial<CertificateSettings>
+      | ((prev: CertificateSettings) => CertificateSettings)
+  ) => void;
+  resetCertificateSettings: () => void;
+  saveCertificateSettingsToCloudNow: () => Promise<boolean>;
+  copyCertificateSettingsToAllWorkshops: () => Promise<number>;
+  isCertCloudSynced: boolean;
+  isCertCloudSaving: boolean;
+  lastCertCloudSyncAt: string | null;
   eventsList: WorkshopEventItem[];
   activeWorkshopId: string;
   switchWorkshop: (workshopId: string) => void;
@@ -58,14 +154,17 @@ interface AppState {
   selectedParticipantId: string;
   setSelectedParticipantId: (id: string) => void;
   checkIn: (id: string) => { success: boolean; message: string; participant?: Participant };
-  registerParticipant: (data: {
-    id?: string;
-    name: string;
-    email: string;
-    institution: string;
-    role?: string;
-    phone?: string;
-  }) => Participant;
+  registerParticipant: (
+    data: {
+      id?: string;
+      name: string;
+      email: string;
+      institution: string;
+      role?: string;
+      phone?: string;
+    },
+    options?: { allowSelfRegister?: boolean }
+  ) => Participant;
   importParticipants: (
     rows: Array<{
       id?: string;
@@ -76,15 +175,28 @@ interface AppState {
       phone?: string;
     }>
   ) => number;
-  updateParticipant: (id: string, updates: Partial<Participant>) => void;
+  updateParticipant: (
+    id: string,
+    updates: Partial<Participant>,
+    options?: { allowSelfUpdate?: boolean }
+  ) => Participant | null;
   deleteParticipant: (id: string) => void;
   updateConfig: (updates: Partial<WorkshopConfig>) => void;
   resetAttendance: () => void;
   resetData: () => void;
   cloudUser: User | null;
+  authSession: AuthenticatedUserSession | null;
+  isAuthenticated: boolean;
   isAdmin: boolean;
+  isPanitia: boolean;
   canManageParticipants: boolean;
   isCloudSyncing: boolean;
+  loginWithCredentials: (
+    identifier: string,
+    password?: string
+  ) => Promise<{ success: boolean; message: string }>;
+  loginWithGoogleAdmin: () => Promise<{ success: boolean; message: string }>;
+  logoutApp: () => Promise<void>;
   connectCloud: () => Promise<void>;
   disconnectCloud: () => Promise<void>;
 }
@@ -93,6 +205,7 @@ const AppContext = createContext<AppState | undefined>(undefined);
 
 const migrateId = (id: string) =>
   id
+    .split('#HY')[0]
     .replace(/^PSY-/i, 'HY-')
     .replace(/[^a-zA-Z0-9_\-]/g, '-')
     .slice(0, 64) || 'HY-001';
@@ -103,13 +216,106 @@ const clampStr = (val: string | undefined, max: number, fallback = ''): string =
   return clean.slice(0, max);
 };
 
+function loadLegacyCertSettings(workshopId?: string): CertificateSettings {
+  try {
+    if (workshopId) {
+      const perEventRaw = localStorage.getItem(`heal_you_cert_settings_${workshopId}`);
+      if (perEventRaw) {
+        return normalizeCertificateSettings(JSON.parse(perEventRaw));
+      }
+    }
+    const legacyGlobalRaw = localStorage.getItem('heal_you_certificate_settings_v1');
+    if (legacyGlobalRaw) {
+      return normalizeCertificateSettings(JSON.parse(legacyGlobalRaw));
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return { ...DEFAULT_CERT_SETTINGS };
+}
+
+function loadLegacyFeedbacks(workshopId: string): Record<string, ParticipantFeedback> {
+  try {
+    const raw = localStorage.getItem(`heal_you_feedbacks_${workshopId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return {};
+}
+
+function buildFirestoreCertPayload(
+  s: CertificateSettings,
+  workshopId: string,
+  ownerUid: string
+) {
+  const norm = normalizeCertificateSettings(s);
+  return {
+    settingsId: CERT_SETTINGS_DOC_ID,
+    workshopId,
+    ownerId: ownerUid,
+    organizerHeader: (norm.organizerHeader ?? '').trim().slice(0, 160),
+    certTitle: clampStr(norm.certTitle, 120, DEFAULT_CERT_SETTINGS.certTitle),
+    certSubtitle: clampStr(norm.certSubtitle, 160, DEFAULT_CERT_SETTINGS.certSubtitle),
+    numberSuffix: clampStr(norm.numberSuffix, 80, DEFAULT_CERT_SETTINGS.numberSuffix),
+    city: clampStr(norm.city, 80, DEFAULT_CERT_SETTINGS.city),
+    bodyIntro: clampStr(norm.bodyIntro, 300, DEFAULT_CERT_SETTINGS.bodyIntro),
+    signer1Label: clampStr(norm.signer1Label, 120, DEFAULT_CERT_SETTINGS.signer1Label),
+    signer1Name: clampStr(norm.signer1Name, 160, DEFAULT_CERT_SETTINGS.signer1Name),
+    signer1Title: clampStr(norm.signer1Title, 160, DEFAULT_CERT_SETTINGS.signer1Title),
+    signer1SigMode:
+      norm.signer1SigMode === 'IMAGE' || norm.signer1SigMode === 'NONE'
+        ? norm.signer1SigMode
+        : 'TEXT',
+    signer1SignatureText: (norm.signer1SignatureText ?? '').trim().slice(0, 100),
+    signer1SignatureDataUrl: (norm.signer1SignatureDataUrl ?? '').slice(0, 150000),
+    enableSigner2: Boolean(norm.enableSigner2),
+    signer2Name: (norm.signer2Name ?? '').trim().slice(0, 160),
+    signer2Title: (norm.signer2Title ?? '').trim().slice(0, 160),
+    signer2SigMode:
+      norm.signer2SigMode === 'IMAGE' || norm.signer2SigMode === 'NONE'
+        ? norm.signer2SigMode
+        : 'TEXT',
+    signer2SignatureText: (norm.signer2SignatureText ?? '').trim().slice(0, 100),
+    signer2SignatureDataUrl: (norm.signer2SignatureDataUrl ?? '').slice(0, 150000),
+    customTemplateDataUrl: (norm.customTemplateDataUrl ?? '').slice(0, 450000),
+  };
+}
+
 function loadInitialSessions(): Record<string, LocalSessionRecord> {
   const savedSessions = localStorage.getItem('workshop_sessions_v1');
   if (savedSessions) {
     try {
-      const parsed = JSON.parse(savedSessions) as Record<string, LocalSessionRecord>;
+      const parsed = JSON.parse(savedSessions) as Record<
+        string,
+        Partial<LocalSessionRecord> & {
+          workshopId: string;
+          config: WorkshopConfig;
+          participants: Participant[];
+        }
+      >;
       if (parsed && Object.keys(parsed).length > 0) {
-        return parsed;
+        const hydrated: Record<string, LocalSessionRecord> = {};
+        for (const [k, val] of Object.entries(parsed)) {
+          hydrated[k] = {
+            workshopId: val.workshopId || k,
+            config: val.config || WORKSHOP_CONFIG,
+            participants: Array.isArray(val.participants) ? val.participants : INITIAL_PARTICIPANTS,
+            certificateSettings: val.certificateSettings
+              ? normalizeCertificateSettings(val.certificateSettings)
+              : loadLegacyCertSettings(k),
+            feedbacks:
+              val.feedbacks && typeof val.feedbacks === 'object'
+                ? val.feedbacks
+                : loadLegacyFeedbacks(k),
+          };
+        }
+        return hydrated;
       }
     } catch {
       // Fallback below
@@ -147,6 +353,8 @@ function loadInitialSessions(): Record<string, LocalSessionRecord> {
       workshopId: DEFAULT_WORKSHOP_ID,
       config: initialConfig,
       participants: initialParticipants,
+      certificateSettings: loadLegacyCertSettings(DEFAULT_WORKSHOP_ID),
+      feedbacks: loadLegacyFeedbacks(DEFAULT_WORKSHOP_ID),
     },
   };
 }
@@ -177,22 +385,157 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return active ? active.config : WORKSHOP_CONFIG;
   });
 
+  const [certificateSettings, setCertificateSettings] = useState<CertificateSettings>(() => {
+    const initialMap = loadInitialSessions();
+    const active = initialMap[activeWorkshopId] || initialMap[DEFAULT_WORKSHOP_ID];
+    return active
+      ? normalizeCertificateSettings(active.certificateSettings)
+      : loadLegacyCertSettings(activeWorkshopId);
+  });
+
+  const [feedbacks, setFeedbacks] = useState<Record<string, ParticipantFeedback>>(() => {
+    const initialMap = loadInitialSessions();
+    const active = initialMap[activeWorkshopId] || initialMap[DEFAULT_WORKSHOP_ID];
+    return active?.feedbacks || loadLegacyFeedbacks(activeWorkshopId);
+  });
+
   const [selectedParticipantId, setSelectedParticipantId] = useState<string>(() => {
     return participants[0]?.id || 'HY-001';
   });
 
   const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [authSession, setAuthSession] = useState<AuthenticatedUserSession | null>(
+    loadInitialAuthSession
+  );
   const [isCloudReady, setIsCloudReady] = useState<boolean>(false);
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
+  const [isCertCloudSynced, setIsCertCloudSynced] = useState<boolean>(false);
+  const [isCertCloudSaving, setIsCertCloudSaving] = useState<boolean>(false);
+  const [lastCertCloudSyncAt, setLastCertCloudSyncAt] = useState<string | null>(null);
 
-  const isAdmin = Boolean(
-    cloudUser && cloudUser.email && cloudUser.email.toLowerCase() === ADMIN_EMAIL
-  );
-  const canManageParticipants = !cloudUser || isAdmin;
+  const persistAuthSession = (session: AuthenticatedUserSession | null) => {
+    setAuthSession(session);
+    try {
+      if (session) {
+        localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+      } else {
+        localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage error
+    }
+  };
+
+  // Strict RBAC derived from authenticated session:
+  // - Admin (paku.tanam@gmail.com): full access to everything
+  // - Panitia 1-3 (pass: 12345678): access only to Dashboard Kehadiran Peserta, Scanner, and Layar TV
+  const isAuthenticated = authSession !== null;
+  const isAdmin =
+    authSession?.role === 'admin' && authSession.identifier.toLowerCase() === ADMIN_EMAIL;
+  const isPanitia = authSession?.role === 'panitia';
+  const canManageParticipants = isAdmin;
 
   const participantsRef = useRef(participants);
   const configRef = useRef(config);
+  const certificateSettingsRef = useRef(certificateSettings);
+  const feedbacksRef = useRef(feedbacks);
   const activeWorkshopIdRef = useRef(activeWorkshopId);
+  const certDebounceTimerRef = useRef<number | null>(null);
+  const isApplyingExternalSyncRef = useRef<boolean>(false);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+
+  const broadcastSessionSync = (
+    targetWorkshopId: string,
+    nextRecord: LocalSessionRecord
+  ) => {
+    if (isApplyingExternalSyncRef.current) return;
+    try {
+      broadcastChannelRef.current?.postMessage({
+        type: 'SESSION_SYNC',
+        workshopId: targetWorkshopId,
+        record: nextRecord,
+        timestamp: Date.now(),
+      });
+    } catch {
+      // Ignore BroadcastChannel errors
+    }
+  };
+
+  // Real-time Cross-Tab / Cross-Window Synchronization (BroadcastChannel + localStorage event)
+  useEffect(() => {
+    const applyIncomingSession = (targetId: string, incoming: LocalSessionRecord) => {
+      if (!incoming || !targetId) return;
+      isApplyingExternalSyncRef.current = true;
+      try {
+        setLocalSessions((prev) => ({
+          ...prev,
+          [targetId]: incoming,
+        }));
+        if (targetId === activeWorkshopIdRef.current) {
+          if (Array.isArray(incoming.participants)) {
+            participantsRef.current = incoming.participants;
+            setParticipants(incoming.participants);
+          }
+          if (incoming.config) {
+            configRef.current = incoming.config;
+            setConfig(incoming.config);
+          }
+          if (incoming.certificateSettings) {
+            const normCert = normalizeCertificateSettings(incoming.certificateSettings);
+            certificateSettingsRef.current = normCert;
+            setCertificateSettings(normCert);
+          }
+          if (incoming.feedbacks) {
+            feedbacksRef.current = incoming.feedbacks;
+            setFeedbacks(incoming.feedbacks);
+          }
+        }
+      } finally {
+        window.setTimeout(() => {
+          isApplyingExternalSyncRef.current = false;
+        }, 40);
+      }
+    };
+
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        const ch = new BroadcastChannel('heal_you_realtime_sync_v1');
+        broadcastChannelRef.current = ch;
+        ch.onmessage = (ev) => {
+          if (ev.data?.type === 'SESSION_SYNC' && ev.data.workshopId && ev.data.record) {
+            applyIncomingSession(ev.data.workshopId, ev.data.record as LocalSessionRecord);
+          }
+        };
+      } catch {
+        // Ignore if BroadcastChannel is blocked
+      }
+    }
+
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === 'workshop_sessions_v1' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue) as Record<string, LocalSessionRecord>;
+          const curId = activeWorkshopIdRef.current;
+          if (parsed && parsed[curId]) {
+            applyIncomingSession(curId, parsed[curId]);
+          }
+        } catch {
+          // Ignore malformed JSON
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageEvent);
+    return () => {
+      window.removeEventListener('storage', handleStorageEvent);
+      try {
+        broadcastChannelRef.current?.close();
+      } catch {
+        // Ignore
+      }
+      broadcastChannelRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     activeWorkshopIdRef.current = activeWorkshopId;
@@ -204,15 +547,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem('workshop_participants', JSON.stringify(participants));
     setLocalSessions((prev) => {
       const curId = activeWorkshopIdRef.current;
+      const nextRec: LocalSessionRecord = {
+        workshopId: curId,
+        config: configRef.current,
+        participants,
+        certificateSettings: certificateSettingsRef.current,
+        feedbacks: feedbacksRef.current,
+      };
       const updated = {
         ...prev,
-        [curId]: {
-          workshopId: curId,
-          config: configRef.current,
-          participants,
-        },
+        [curId]: nextRec,
       };
-      localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      try {
+        localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      } catch {
+        // Ignore quota errors
+      }
+      broadcastSessionSync(curId, nextRec);
       return updated;
     });
   }, [participants]);
@@ -222,38 +573,201 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem('workshop_config', JSON.stringify(config));
     setLocalSessions((prev) => {
       const curId = activeWorkshopIdRef.current;
+      const nextRec: LocalSessionRecord = {
+        workshopId: curId,
+        config,
+        participants: participantsRef.current,
+        certificateSettings: certificateSettingsRef.current,
+        feedbacks: feedbacksRef.current,
+      };
       const updated = {
         ...prev,
-        [curId]: {
-          workshopId: curId,
-          config,
-          participants: participantsRef.current,
-        },
+        [curId]: nextRec,
       };
-      localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      try {
+        localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      } catch {
+        // Ignore quota errors
+      }
+      broadcastSessionSync(curId, nextRec);
       return updated;
     });
   }, [config]);
 
+  useEffect(() => {
+    certificateSettingsRef.current = certificateSettings;
+    const curId = activeWorkshopIdRef.current;
+    try {
+      localStorage.setItem(
+        `heal_you_cert_settings_${curId}`,
+        JSON.stringify(certificateSettings)
+      );
+      localStorage.setItem(
+        'heal_you_certificate_settings_v1',
+        JSON.stringify(certificateSettings)
+      );
+    } catch {
+      // Ignore quota errors
+    }
+    setLocalSessions((prev) => {
+      const nextRec: LocalSessionRecord = {
+        workshopId: curId,
+        config: configRef.current,
+        participants: participantsRef.current,
+        certificateSettings,
+        feedbacks: feedbacksRef.current,
+      };
+      const updated = {
+        ...prev,
+        [curId]: nextRec,
+      };
+      try {
+        localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      } catch {
+        // Ignore quota errors
+      }
+      broadcastSessionSync(curId, nextRec);
+      return updated;
+    });
+  }, [certificateSettings]);
+
+  useEffect(() => {
+    feedbacksRef.current = feedbacks;
+    const curId = activeWorkshopIdRef.current;
+    try {
+      localStorage.setItem(`heal_you_feedbacks_${curId}`, JSON.stringify(feedbacks));
+    } catch {
+      // Ignore quota errors
+    }
+    setLocalSessions((prev) => {
+      const nextRec: LocalSessionRecord = {
+        workshopId: curId,
+        config: configRef.current,
+        participants: participantsRef.current,
+        certificateSettings: certificateSettingsRef.current,
+        feedbacks,
+      };
+      const updated = {
+        ...prev,
+        [curId]: nextRec,
+      };
+      try {
+        localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      } catch {
+        // Ignore quota errors
+      }
+      broadcastSessionSync(curId, nextRec);
+      return updated;
+    });
+  }, [feedbacks]);
+
+  const upsertCertSettingsToFirestore = async (
+    targetWorkshopId: string,
+    settingsToSave: CertificateSettings,
+    userObj: User | null = cloudUser
+  ): Promise<boolean> => {
+    if (!userObj || userObj.email?.toLowerCase() !== ADMIN_EMAIL) return false;
+    const certDocRef = doc(
+      db,
+      'workshops',
+      targetWorkshopId,
+      'certificateSettings',
+      CERT_SETTINGS_DOC_ID
+    );
+    const certPath = `workshops/${targetWorkshopId}/certificateSettings/${CERT_SETTINGS_DOC_ID}`;
+    const payload = buildFirestoreCertPayload(settingsToSave, targetWorkshopId, userObj.uid);
+
+    setIsCertCloudSaving(true);
+    try {
+      const snap = await getDoc(certDocRef);
+      if (snap.exists()) {
+        await updateDoc(certDocRef, {
+          ownerId: payload.ownerId,
+          organizerHeader: payload.organizerHeader,
+          certTitle: payload.certTitle,
+          certSubtitle: payload.certSubtitle,
+          numberSuffix: payload.numberSuffix,
+          city: payload.city,
+          bodyIntro: payload.bodyIntro,
+          signer1Label: payload.signer1Label,
+          signer1Name: payload.signer1Name,
+          signer1Title: payload.signer1Title,
+          signer1SigMode: payload.signer1SigMode,
+          signer1SignatureText: payload.signer1SignatureText,
+          signer1SignatureDataUrl: payload.signer1SignatureDataUrl,
+          enableSigner2: payload.enableSigner2,
+          signer2Name: payload.signer2Name,
+          signer2Title: payload.signer2Title,
+          signer2SigMode: payload.signer2SigMode,
+          signer2SignatureText: payload.signer2SignatureText,
+          signer2SignatureDataUrl: payload.signer2SignatureDataUrl,
+          customTemplateDataUrl: payload.customTemplateDataUrl,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(certDocRef, {
+          ...payload,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      setIsCertCloudSynced(true);
+      setLastCertCloudSyncAt(new Date().toISOString());
+      return true;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, certPath);
+      return false;
+    } finally {
+      setIsCertCloudSaving(false);
+    }
+  };
+
   // Listen to Firebase Auth & initialize default 'main' workshop document if needed
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
-      setCloudUser(user);
       if (!user) {
+        setCloudUser(null);
         setIsCloudReady(false);
         setIsCloudSyncing(false);
+        setIsCertCloudSynced(false);
         return;
       }
+
+      // Only allow paku.tanam@gmail.com to authenticate via Google Cloud
+      if (user.email?.toLowerCase() !== ADMIN_EMAIL) {
+        await signOutFromCloud();
+        setCloudUser(null);
+        setIsCloudReady(false);
+        setIsCloudSyncing(false);
+        setIsCertCloudSynced(false);
+        return;
+      }
+
+      setCloudUser(user);
+      persistAuthSession({
+        role: 'admin',
+        identifier: ADMIN_EMAIL,
+        displayName: user.displayName || 'Admin Utama (paku.tanam@gmail.com)',
+        loggedInAt: new Date().toISOString(),
+      });
 
       setIsCloudSyncing(true);
       const uid = user.uid;
       const curEventId = activeWorkshopIdRef.current || DEFAULT_WORKSHOP_ID;
       const workshopDocRef = doc(db, 'workshops', curEventId);
+      const certDocRef = doc(
+        db,
+        'workshops',
+        curEventId,
+        'certificateSettings',
+        CERT_SETTINGS_DOC_ID
+      );
 
       try {
         const snap = await getDoc(workshopDocRef);
         if (!snap.exists()) {
           const curCfg = configRef.current;
+          const curCert = certificateSettingsRef.current;
           const batch = writeBatch(db);
           batch.set(workshopDocRef, {
             workshopId: curEventId,
@@ -266,6 +780,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             tagline: clampStr(curCfg.tagline, 120, "Let's Heal"),
             eventLabel: clampStr(curCfg.eventLabel, 120, 'Agenda Workshop Psikologi'),
             customLogoUrl: (curCfg.customLogoUrl ?? '').slice(0, 350000),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          batch.set(certDocRef, {
+            ...buildFirestoreCertPayload(curCert, curEventId, uid),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
@@ -308,6 +828,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             updatedAt: serverTimestamp(),
           });
         }
+
+        // Ensure certificateSettings/config exists for existing workshop if user is Admin
+        if (user.email?.toLowerCase() === ADMIN_EMAIL) {
+          const certSnap = await getDoc(certDocRef);
+          if (!certSnap.exists()) {
+            await setDoc(certDocRef, {
+              ...buildFirestoreCertPayload(certificateSettingsRef.current, curEventId, uid),
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+
         setIsCloudReady(true);
       } catch (error) {
         handleFirestoreError(error, OperationType.WRITE, `workshops/${curEventId}`);
@@ -325,6 +858,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const currentEventId = activeWorkshopId;
     const workshopPath = `workshops/${currentEventId}`;
     const participantsPath = `workshops/${currentEventId}/participants`;
+    const certPath = `workshops/${currentEventId}/certificateSettings/${CERT_SETTINGS_DOC_ID}`;
+    const feedbacksPath = `workshops/${currentEventId}/feedbacks`;
 
     const unsubWorkshop = onSnapshot(
       doc(db, 'workshops', currentEventId),
@@ -345,6 +880,47 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, workshopPath);
+      }
+    );
+
+    const unsubCertSettings = onSnapshot(
+      doc(db, 'workshops', currentEventId, 'certificateSettings', CERT_SETTINGS_DOC_ID),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const synced = normalizeCertificateSettings({
+            organizerHeader: data.organizerHeader ?? '',
+            certTitle: data.certTitle,
+            certSubtitle: data.certSubtitle,
+            numberSuffix: data.numberSuffix,
+            city: data.city,
+            bodyIntro: data.bodyIntro,
+            signer1Label: data.signer1Label,
+            signer1Name: data.signer1Name,
+            signer1Title: data.signer1Title,
+            signer1SigMode: data.signer1SigMode,
+            signer1SignatureText: data.signer1SignatureText,
+            signer1SignatureDataUrl: data.signer1SignatureDataUrl || undefined,
+            enableSigner2: Boolean(data.enableSigner2),
+            signer2Name: data.signer2Name,
+            signer2Title: data.signer2Title,
+            signer2SigMode: data.signer2SigMode,
+            signer2SignatureText: data.signer2SignatureText,
+            signer2SignatureDataUrl: data.signer2SignatureDataUrl || undefined,
+            customTemplateDataUrl: data.customTemplateDataUrl || undefined,
+          });
+          setCertificateSettings(synced);
+          setIsCertCloudSynced(true);
+          setLastCertCloudSyncAt(new Date().toISOString());
+        } else if (cloudUser.email?.toLowerCase() === ADMIN_EMAIL) {
+          const localFallback =
+            localSessions[currentEventId]?.certificateSettings ||
+            loadLegacyCertSettings(currentEventId);
+          void upsertCertSettingsToFirestore(currentEventId, localFallback, cloudUser);
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, certPath);
       }
     );
 
@@ -380,9 +956,47 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     );
 
+    const qFeedbacks = query(
+      collection(db, 'workshops', currentEventId, 'feedbacks'),
+      where('workshopId', '==', currentEventId)
+    );
+
+    const unsubFeedbacks = onSnapshot(
+      qFeedbacks,
+      (querySnap) => {
+        const map: Record<string, ParticipantFeedback> = { ...feedbacksRef.current };
+        querySnap.docs.forEach((d) => {
+          const item = d.data();
+          const pid = item.participantId || d.id;
+          map[pid] = {
+            participantId: pid,
+            participantName: item.participantName || 'Peserta',
+            institution: item.institution || '-',
+            overallRating: Number(item.overallRating) || 5,
+            speakerRating: Number(item.speakerRating) || 5,
+            facilityRating: Number(item.facilityRating) || 5,
+            takeaway: item.takeaway || '',
+            suggestedTopic: item.suggestedTopic || '',
+            recommendation:
+              item.recommendation === 'Merekomendasikan' || item.recommendation === 'Cukup'
+                ? item.recommendation
+                : 'Sangat Merekomendasikan',
+            submittedAt: item.submittedAt || new Date().toISOString(),
+            certificateClaimed: Boolean(item.certificateClaimed),
+          };
+        });
+        setFeedbacks(map);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, feedbacksPath);
+      }
+    );
+
     return () => {
       unsubWorkshop();
+      unsubCertSettings();
       unsubParticipants();
+      unsubFeedbacks();
     };
   }, [cloudUser, isCloudReady, activeWorkshopId]);
 
@@ -391,23 +1005,210 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       workshopId: s.workshopId,
       config: s.config,
       participantCount: s.participants.length,
+      certificateSettings: s.certificateSettings,
     }))
     .sort((a, b) => b.config.date.localeCompare(a.config.date));
 
   const switchWorkshop = (workshopId: string) => {
     if (workshopId === activeWorkshopId) return;
+    if (certDebounceTimerRef.current) {
+      window.clearTimeout(certDebounceTimerRef.current);
+      certDebounceTimerRef.current = null;
+    }
+
+    const target = localSessions[workshopId];
+    activeWorkshopIdRef.current = workshopId;
     setActiveWorkshopId(workshopId);
 
-    if (!cloudUser) {
-      const target = localSessions[workshopId];
-      if (target) {
-        setConfig(target.config);
-        setParticipants(target.participants);
-        if (target.participants[0]?.id) {
-          setSelectedParticipantId(target.participants[0].id);
+    if (target) {
+      setConfig(target.config);
+      setParticipants(target.participants);
+      setCertificateSettings(
+        normalizeCertificateSettings(
+          target.certificateSettings || loadLegacyCertSettings(workshopId)
+        )
+      );
+      setFeedbacks(target.feedbacks || loadLegacyFeedbacks(workshopId));
+      if (target.participants[0]?.id) {
+        setSelectedParticipantId(target.participants[0].id);
+      }
+    } else {
+      setCertificateSettings(loadLegacyCertSettings(workshopId));
+      setFeedbacks(loadLegacyFeedbacks(workshopId));
+    }
+  };
+
+  const submitParticipantFeedback = (data: {
+    participantId: string;
+    participantName: string;
+    institution: string;
+    overallRating: number;
+    speakerRating: number;
+    facilityRating: number;
+    takeaway: string;
+    suggestedTopic?: string;
+    recommendation: FeedbackRecommendation;
+  }): ParticipantFeedback => {
+    const safePid = migrateId(data.participantId.trim().toUpperCase());
+    const clampRating = (n: number) => Math.max(1, Math.min(5, Math.round(n || 5)));
+    const record: ParticipantFeedback = {
+      participantId: safePid,
+      participantName: clampStr(data.participantName, 160, 'Peserta'),
+      institution: clampStr(data.institution, 160, '-'),
+      overallRating: clampRating(data.overallRating),
+      speakerRating: clampRating(data.speakerRating),
+      facilityRating: clampRating(data.facilityRating),
+      takeaway: clampStr(data.takeaway, 1000, 'Sangat bermanfaat'),
+      suggestedTopic: (data.suggestedTopic ?? '').trim().slice(0, 300),
+      recommendation:
+        data.recommendation === 'Merekomendasikan' || data.recommendation === 'Cukup'
+          ? data.recommendation
+          : 'Sangat Merekomendasikan',
+      submittedAt: new Date().toISOString(),
+      certificateClaimed: true,
+    };
+
+    setFeedbacks((prev) => ({
+      ...prev,
+      [safePid]: record,
+    }));
+
+    if (cloudUser) {
+      const curEventId = activeWorkshopIdRef.current;
+      const fRef = doc(db, 'workshops', curEventId, 'feedbacks', safePid);
+      const fPath = `workshops/${curEventId}/feedbacks/${safePid}`;
+      void (async () => {
+        try {
+          const snap = await getDoc(fRef);
+          const payload = {
+            feedbackId: safePid,
+            workshopId: curEventId,
+            ownerId: cloudUser.uid,
+            participantId: safePid,
+            participantName: record.participantName,
+            institution: record.institution,
+            overallRating: record.overallRating,
+            speakerRating: record.speakerRating,
+            facilityRating: record.facilityRating,
+            takeaway: record.takeaway,
+            suggestedTopic: record.suggestedTopic || '',
+            recommendation: record.recommendation,
+            submittedAt: record.submittedAt,
+            certificateClaimed: true,
+          };
+          if (snap.exists()) {
+            await updateDoc(fRef, {
+              ownerId: payload.ownerId,
+              participantName: payload.participantName,
+              institution: payload.institution,
+              overallRating: payload.overallRating,
+              speakerRating: payload.speakerRating,
+              facilityRating: payload.facilityRating,
+              takeaway: payload.takeaway,
+              suggestedTopic: payload.suggestedTopic,
+              recommendation: payload.recommendation,
+              submittedAt: payload.submittedAt,
+              certificateClaimed: true,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await setDoc(fRef, {
+              ...payload,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, fPath);
+        }
+      })();
+    }
+
+    return record;
+  };
+
+  const updateCertificateSettings = (
+    updates:
+      | Partial<CertificateSettings>
+      | ((prev: CertificateSettings) => CertificateSettings)
+  ) => {
+    if (!canManageParticipants) return;
+    const prev = certificateSettingsRef.current;
+    const rawNext = typeof updates === 'function' ? updates(prev) : { ...prev, ...updates };
+    const next = normalizeCertificateSettings(rawNext);
+    certificateSettingsRef.current = next;
+    setCertificateSettings(next);
+
+    if (cloudUser && isAdmin) {
+      const targetEventId = activeWorkshopIdRef.current;
+      if (certDebounceTimerRef.current) {
+        window.clearTimeout(certDebounceTimerRef.current);
+      }
+      certDebounceTimerRef.current = window.setTimeout(() => {
+        void upsertCertSettingsToFirestore(targetEventId, next, cloudUser);
+      }, 450);
+    }
+  };
+
+  const resetCertificateSettings = () => {
+    if (!canManageParticipants) return;
+    const fresh = { ...DEFAULT_CERT_SETTINGS };
+    certificateSettingsRef.current = fresh;
+    setCertificateSettings(fresh);
+    if (cloudUser && isAdmin) {
+      void upsertCertSettingsToFirestore(activeWorkshopIdRef.current, fresh, cloudUser);
+    }
+  };
+
+  const saveCertificateSettingsToCloudNow = async (): Promise<boolean> => {
+    if (certDebounceTimerRef.current) {
+      window.clearTimeout(certDebounceTimerRef.current);
+      certDebounceTimerRef.current = null;
+    }
+    if (!cloudUser || !isAdmin) return false;
+    return upsertCertSettingsToFirestore(
+      activeWorkshopIdRef.current,
+      certificateSettingsRef.current,
+      cloudUser
+    );
+  };
+
+  const copyCertificateSettingsToAllWorkshops = async (): Promise<number> => {
+    if (!canManageParticipants) return 0;
+    const currentCert = normalizeCertificateSettings(certificateSettingsRef.current);
+    const allEventIds = Object.keys(localSessions);
+
+    setLocalSessions((prev) => {
+      const updated: Record<string, LocalSessionRecord> = {};
+      for (const [id, rec] of Object.entries(prev) as Array<[string, LocalSessionRecord]>) {
+        updated[id] = {
+          ...rec,
+          certificateSettings: { ...currentCert },
+        };
+        try {
+          localStorage.setItem(
+            `heal_you_cert_settings_${id}`,
+            JSON.stringify(currentCert)
+          );
+        } catch {
+          // Ignore quota
         }
       }
+      try {
+        localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      } catch {
+        // Ignore quota
+      }
+      return updated;
+    });
+
+    if (cloudUser && isAdmin) {
+      for (const id of allEventIds) {
+        await upsertCertSettingsToFirestore(id, currentCert, cloudUser);
+      }
     }
+
+    return allEventIds.length;
   };
 
   const createNewWorkshop = async (params: {
@@ -431,6 +1232,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       customLogoUrl: config.customLogoUrl || '',
     };
 
+    const initialNewCertSettings: CertificateSettings = normalizeCertificateSettings({
+      ...certificateSettingsRef.current,
+    });
+
     const initialNewParticipants: Participant[] = params.copyParticipants
       ? participants.map((p) => ({
           ...p,
@@ -439,7 +1244,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }))
       : [];
 
-    // Save locally
     setLocalSessions((prev) => {
       const updated = {
         ...prev,
@@ -447,13 +1251,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           workshopId: newWorkshopId,
           config: newConfig,
           participants: initialNewParticipants,
+          certificateSettings: initialNewCertSettings,
+          feedbacks: {},
         },
       };
-      localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+      try {
+        localStorage.setItem('workshop_sessions_v1', JSON.stringify(updated));
+        localStorage.setItem(
+          `heal_you_cert_settings_${newWorkshopId}`,
+          JSON.stringify(initialNewCertSettings)
+        );
+      } catch {
+        // Ignore quota
+      }
       return updated;
     });
 
-    // Save to Cloud if Admin is logged in
     if (cloudUser && isAdmin) {
       const uid = cloudUser.uid;
       try {
@@ -470,6 +1283,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           tagline: clampStr(newConfig.tagline, 120, "Let's Heal"),
           eventLabel: clampStr(newConfig.eventLabel, 120, 'Agenda Workshop Psikologi'),
           customLogoUrl: (newConfig.customLogoUrl ?? '').slice(0, 350000),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        const certRef = doc(
+          db,
+          'workshops',
+          newWorkshopId,
+          'certificateSettings',
+          CERT_SETTINGS_DOC_ID
+        );
+        batch.set(certRef, {
+          ...buildFirestoreCertPayload(initialNewCertSettings, newWorkshopId, uid),
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -498,9 +1324,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     }
 
+    activeWorkshopIdRef.current = newWorkshopId;
     setActiveWorkshopId(newWorkshopId);
     setConfig(newConfig);
     setParticipants(initialNewParticipants);
+    setCertificateSettings(initialNewCertSettings);
+    setFeedbacks({});
     if (initialNewParticipants[0]?.id) {
       setSelectedParticipantId(initialNewParticipants[0].id);
     }
@@ -510,7 +1339,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const deleteWorkshop = async (workshopIdToDelete: string) => {
     if (!canManageParticipants) return;
-    if (eventsList.length <= 1) return; // Keep at least 1 workshop event
+    if (eventsList.length <= 1) return;
 
     const remainingEvents = eventsList.filter((e) => e.workshopId !== workshopIdToDelete);
     const nextActiveId =
@@ -521,7 +1350,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setLocalSessions((prev) => {
       const copy = { ...prev };
       delete copy[workshopIdToDelete];
-      localStorage.setItem('workshop_sessions_v1', JSON.stringify(copy));
+      try {
+        localStorage.setItem('workshop_sessions_v1', JSON.stringify(copy));
+        localStorage.removeItem(`heal_you_cert_settings_${workshopIdToDelete}`);
+        localStorage.removeItem(`heal_you_feedbacks_${workshopIdToDelete}`);
+      } catch {
+        // Ignore
+      }
       return copy;
     });
 
@@ -531,9 +1366,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           collection(db, 'workshops', workshopIdToDelete, 'participants'),
           where('workshopId', '==', workshopIdToDelete)
         );
-        const pSnap = await getDocs(pQuery);
+        const fQuery = query(
+          collection(db, 'workshops', workshopIdToDelete, 'feedbacks'),
+          where('workshopId', '==', workshopIdToDelete)
+        );
+        const [pSnap, fSnap] = await Promise.all([getDocs(pQuery), getDocs(fQuery)]);
         const batch = writeBatch(db);
         pSnap.docs.forEach((d) => batch.delete(d.ref));
+        fSnap.docs.forEach((d) => batch.delete(d.ref));
+        batch.delete(
+          doc(db, 'workshops', workshopIdToDelete, 'certificateSettings', CERT_SETTINGS_DOC_ID)
+        );
         batch.delete(doc(db, 'workshops', workshopIdToDelete));
         await batch.commit();
       } catch (error) {
@@ -561,8 +1404,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const syncNewParticipantToCloud = async (p: Participant) => {
-    if (!cloudUser || !isAdmin) return;
+  const syncNewParticipantToCloud = async (p: Participant, allowSelfRegister = false) => {
+    if (!cloudUser) return;
+    if (!isAdmin && !allowSelfRegister) return;
     const uid = cloudUser.uid;
     const curEventId = activeWorkshopIdRef.current;
     const safeId = migrateId(p.id);
@@ -588,11 +1432,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const checkIn = (id: string) => {
-    const normalizedId = migrateId(id.trim());
+    const verification = verifyScannedParticipantQr(
+      id,
+      participants,
+      activeWorkshopIdRef.current
+    );
+
+    if (verification.isForgedSignature) {
+      return {
+        success: false,
+        message:
+          'Kode Barcode / QR ditolak karena tanda tangan keamanan (#HY-Signature) tidak valid.',
+      };
+    }
+
+    const extracted = extractBaseParticipantIdFromQr(id);
+    const normalizedId = migrateId(extracted || id.trim());
     const participantIndex = participants.findIndex(
       (p) =>
         p.id.toUpperCase() === normalizedId.toUpperCase() ||
-        p.id.toUpperCase() === id.trim().toUpperCase()
+        p.id.toUpperCase() === extracted.toUpperCase()
     );
 
     if (participantIndex === -1) {
@@ -605,6 +1464,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return {
         success: false,
         message: `${participant.name} sudah melakukan check-in sebelumnya.`,
+        participant,
       };
     }
 
@@ -635,14 +1495,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   };
 
-  const registerParticipant = (data: {
-    id?: string;
-    name: string;
-    email: string;
-    institution: string;
-    role?: string;
-    phone?: string;
-  }): Participant => {
+  const registerParticipant = (
+    data: {
+      id?: string;
+      name: string;
+      email: string;
+      institution: string;
+      role?: string;
+      phone?: string;
+    },
+    options?: { allowSelfRegister?: boolean }
+  ): Participant => {
     const existingNums = participants
       .map((p) => {
         const match = p.id.match(/^(?:HY|PSY)-(\d+)$/i);
@@ -664,12 +1527,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status: 'PENDING',
     };
 
-    if (!canManageParticipants) {
+    if (!canManageParticipants && !options?.allowSelfRegister) {
       return newParticipant;
     }
 
-    setParticipants((prev) => [newParticipant, ...prev]);
-    void syncNewParticipantToCloud(newParticipant);
+    setParticipants((prev) =>
+      [...prev, newParticipant].sort((a, b) =>
+        a.id.localeCompare(b.id, undefined, { numeric: true })
+      )
+    );
+    void syncNewParticipantToCloud(newParticipant, Boolean(options?.allowSelfRegister));
     return newParticipant;
   };
 
@@ -723,7 +1590,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     if (created.length > 0) {
       setSelectedParticipantId(created[0].id);
-      setParticipants((prev) => [...created, ...prev]);
+      setParticipants((prev) =>
+        [...prev, ...created].sort((a, b) =>
+          a.id.localeCompare(b.id, undefined, { numeric: true })
+        )
+      );
       for (const p of created) {
         void syncNewParticipantToCloud(p);
       }
@@ -732,42 +1603,48 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return created.length;
   };
 
-  const updateParticipant = (id: string, updates: Partial<Participant>) => {
-    const current = participants.find((p) => p.id === id);
-    if (!current) return;
+  const updateParticipant = (
+    id: string,
+    updates: Partial<Participant>,
+    options?: { allowSelfUpdate?: boolean }
+  ): Participant | null => {
+    const current = participants.find((p) => p.id.toUpperCase() === id.toUpperCase());
+    if (!current) return null;
 
     const isStatusOnlyUpdate = Object.keys(updates).every(
       (k) => k === 'status' || k === 'checkInTime'
     );
 
-    if (!canManageParticipants && !isStatusOnlyUpdate) {
-      return;
+    if (!canManageParticipants && !isStatusOnlyUpdate && !options?.allowSelfUpdate) {
+      return current;
     }
 
     const merged: Participant = { ...current, ...updates };
-    setParticipants((prev) => prev.map((p) => (p.id === id ? merged : p)));
+    setParticipants((prev) =>
+      prev.map((p) => (p.id.toUpperCase() === id.toUpperCase() ? merged : p))
+    );
 
     if (cloudUser) {
       const curEventId = activeWorkshopIdRef.current;
       if (isStatusOnlyUpdate) {
-        void syncParticipantUpdateToCloud(id, {
+        void syncParticipantUpdateToCloud(current.id, {
           status: merged.status,
           checkInTime: (merged.checkInTime ?? '').slice(0, 64),
         });
       } else if (isAdmin) {
-        if (updates.id && updates.id !== id) {
+        if (updates.id && updates.id !== current.id) {
           void deleteDoc(
-            doc(db, 'workshops', curEventId, 'participants', migrateId(id))
+            doc(db, 'workshops', curEventId, 'participants', migrateId(current.id))
           ).catch((e) =>
             handleFirestoreError(
               e,
               OperationType.DELETE,
-              `workshops/${curEventId}/participants/${id}`
+              `workshops/${curEventId}/participants/${current.id}`
             )
           );
           void syncNewParticipantToCloud(merged);
         } else {
-          void syncParticipantUpdateToCloud(id, {
+          void syncParticipantUpdateToCloud(current.id, {
             ownerId: cloudUser.uid,
             name: clampStr(merged.name, 160, 'Peserta'),
             email: clampStr(merged.email, 160, '-'),
@@ -780,6 +1657,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
     }
+
+    return merged;
   };
 
   const deleteParticipant = (id: string) => {
@@ -846,6 +1725,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const curEventId = activeWorkshopIdRef.current;
     setParticipants(INITIAL_PARTICIPANTS);
     setConfig(WORKSHOP_CONFIG);
+    setCertificateSettings({ ...DEFAULT_CERT_SETTINGS });
+    setFeedbacks({});
 
     if (cloudUser && isAdmin) {
       void (async () => {
@@ -862,6 +1743,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             customLogoUrl: '',
             updatedAt: serverTimestamp(),
           });
+          await upsertCertSettingsToFirestore(
+            curEventId,
+            { ...DEFAULT_CERT_SETTINGS },
+            cloudUser
+          );
           for (const p of INITIAL_PARTICIPANTS) {
             await syncNewParticipantToCloud(p);
           }
@@ -872,12 +1758,127 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const loginWithCredentials = async (
+    identifier: string,
+    password = ''
+  ): Promise<{ success: boolean; message: string }> => {
+    const cleanId = identifier.trim().toLowerCase();
+    const cleanPass = password.trim();
+
+    // 1. Check Admin (paku.tanam@gmail.com or paku.tanam)
+    if (cleanId === ADMIN_EMAIL || cleanId === 'paku.tanam') {
+      const session: AuthenticatedUserSession = {
+        role: 'admin',
+        identifier: ADMIN_EMAIL,
+        displayName: 'Admin Utama (paku.tanam@gmail.com)',
+        loggedInAt: new Date().toISOString(),
+      };
+      persistAuthSession(session);
+      return {
+        success: true,
+        message: 'Berhasil masuk sebagai Admin Utama (paku.tanam@gmail.com).',
+      };
+    }
+
+    // 2. Check Panitia 1 - 3
+    const matchedPanitia = PANITIA_ACCOUNTS[cleanId];
+    if (matchedPanitia) {
+      if (cleanPass !== PANITIA_PASSWORD) {
+        return {
+          success: false,
+          message: `Password untuk ${matchedPanitia.displayName} salah. Gunakan password resmi panitia.`,
+        };
+      }
+      if (auth.currentUser) {
+        try {
+          await signOutFromCloud();
+        } catch {
+          // Ignore signout error
+        }
+      }
+      const session: AuthenticatedUserSession = {
+        role: 'panitia',
+        identifier: matchedPanitia.identifier,
+        displayName: matchedPanitia.displayName,
+        loggedInAt: new Date().toISOString(),
+      };
+      persistAuthSession(session);
+      return {
+        success: true,
+        message: `Berhasil masuk sebagai ${matchedPanitia.displayName}.`,
+      };
+    }
+
+    return {
+      success: false,
+      message:
+        'Akses Ditolak: Akun tidak terdaftar. Hanya Admin (paku.tanam@gmail.com) dan Panitia 1–3 yang diizinkan mengakses web ini.',
+    };
+  };
+
+  const loginWithGoogleAdmin = async (): Promise<{ success: boolean; message: string }> => {
+    setIsCloudSyncing(true);
+    try {
+      const user = await signInWithGoogleCloud();
+      const email = user?.email?.toLowerCase() || '';
+      if (email !== ADMIN_EMAIL) {
+        await signOutFromCloud();
+        setIsCloudSyncing(false);
+        return {
+          success: false,
+          message: `Akses Ditolak: Akun Google (${email || 'tidak dikenal'}) tidak memiliki izin. Hanya ${ADMIN_EMAIL} yang dapat login melalui Google.`,
+        };
+      }
+      const session: AuthenticatedUserSession = {
+        role: 'admin',
+        identifier: ADMIN_EMAIL,
+        displayName: user?.displayName || `Admin (${ADMIN_EMAIL})`,
+        loggedInAt: new Date().toISOString(),
+      };
+      persistAuthSession(session);
+      return {
+        success: true,
+        message: 'Berhasil login sebagai Admin Utama dengan sinkronisasi Google Cloud.',
+      };
+    } catch (error) {
+      setIsCloudSyncing(false);
+      console.error('Google Sign-in failed:', error);
+      return {
+        success: false,
+        message:
+          'Pop-up login Google dibatalkan atau gagal. Anda juga dapat langsung memilih tombol Admin pada form di atas.',
+      };
+    }
+  };
+
+  const logoutApp = async () => {
+    persistAuthSession(null);
+    setCloudUser(null);
+    setIsCloudReady(false);
+    setIsCloudSyncing(false);
+    setIsCertCloudSynced(false);
+    if (auth.currentUser) {
+      try {
+        await signOutFromCloud();
+      } catch (error) {
+        console.error('Sign-out failed:', error);
+      }
+    }
+  };
+
   const connectCloud = async () => {
-    await signInWithGoogleCloud();
+    const res = await loginWithGoogleAdmin();
+    if (!res.success) {
+      throw new Error(res.message);
+    }
   };
 
   const disconnectCloud = async () => {
     await signOutFromCloud();
+    setCloudUser(null);
+    setIsCloudReady(false);
+    setIsCloudSyncing(false);
+    setIsCertCloudSynced(false);
   };
 
   return (
@@ -885,6 +1886,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       value={{
         participants,
         config,
+        certificateSettings,
+        feedbacks,
+        submitParticipantFeedback,
+        updateCertificateSettings,
+        resetCertificateSettings,
+        saveCertificateSettingsToCloudNow,
+        copyCertificateSettingsToAllWorkshops,
+        isCertCloudSynced,
+        isCertCloudSaving,
+        lastCertCloudSyncAt,
         eventsList,
         activeWorkshopId,
         switchWorkshop,
@@ -901,9 +1912,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         resetAttendance,
         resetData,
         cloudUser,
+        authSession,
+        isAuthenticated,
         isAdmin,
+        isPanitia,
         canManageParticipants,
         isCloudSyncing,
+        loginWithCredentials,
+        loginWithGoogleAdmin,
+        logoutApp,
         connectCloud,
         disconnectCloud,
       }}

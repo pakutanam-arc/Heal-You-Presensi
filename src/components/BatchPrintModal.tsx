@@ -2,6 +2,8 @@ import React, { useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { Participant, WorkshopConfig } from '../types';
 import { HealYouLogo, HEAL_YOU_DATA_URI, loadLogoImage } from './HealYouLogo';
+import { buildSignedParticipantQrValue } from '../lib/qrSecurity';
+import { useAppContext } from '../store';
 import { Download, Printer, X, Layers, CheckCircle2 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -94,6 +96,7 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
   participants,
   config,
 }) => {
+  const { activeWorkshopId } = useAppContext();
   const qrRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [isGeneratingSheets, setIsGeneratingSheets] = useState(false);
   const [statusNote, setStatusNote] = useState<string | null>(null);
@@ -564,7 +567,7 @@ export const BatchPrintModal: React.FC<BatchPrintModalProps> = ({
                           className="relative flex items-center justify-center"
                         >
                           <QRCodeCanvas
-                            value={p.id}
+                            value={buildSignedParticipantQrValue(p.id, activeWorkshopId)}
                             size={320}
                             level="H"
                             minVersion={4}

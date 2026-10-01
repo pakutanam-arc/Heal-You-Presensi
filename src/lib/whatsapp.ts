@@ -92,6 +92,64 @@ export function parseDigitalTicketFromUrl(): {
   return { participant, config };
 }
 
+export function buildParticipantPortalUrl(
+  workshopId: string,
+  config: WorkshopConfig,
+  initialTab?: 'register' | 'certificate'
+): string {
+  const baseUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}${window.location.pathname}`
+      : '';
+  const params = new URLSearchParams({
+    portal: 'peserta',
+    evt: workshopId || 'main',
+    event: config.name,
+    label: config.eventLabel || 'Agenda Workshop Psikologi',
+    date: config.date,
+    time: formatSafeTimeStr(config.startTime),
+    loc: config.location,
+    org: config.organizer || 'Muslimah Healing Journey',
+    tag: config.tagline || "Let's Heal",
+  });
+  if (initialTab === 'certificate') {
+    params.set('tab', 'certificate');
+  }
+  return `${baseUrl}?${params.toString()}`;
+}
+
+export function parseParticipantPortalFromUrl(): {
+  workshopId: string;
+  configFallback: WorkshopConfig;
+  initialTab: 'register' | 'certificate';
+} | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  const portal = params.get('portal');
+  if (portal !== 'peserta' && portal !== 'participant') return null;
+
+  const workshopId = params.get('evt') || 'main';
+  const date = params.get('date') || format(new Date(), 'yyyy-MM-dd');
+  const time = params.get('time') || '08:00';
+  const tabParam = params.get('tab');
+
+  const configFallback: WorkshopConfig = {
+    name: params.get('event') || 'Self Healing & Mindfulness Workshop',
+    eventLabel: params.get('label') || 'Agenda Workshop Psikologi',
+    date,
+    startTime: `${date}T${time}:00`,
+    location: params.get('loc') || 'Auditorium Psikologi, Gedung B Lt. 3',
+    organizer: params.get('org') || 'Muslimah Healing Journey',
+    tagline: params.get('tag') || "Let's Heal",
+  };
+
+  return {
+    workshopId,
+    configFallback,
+    initialTab: tabParam === 'certificate' ? 'certificate' : 'register',
+  };
+}
+
 export function buildWhatsAppMessage(participant: Participant, config: WorkshopConfig): string {
   const organizer = config.organizer || 'Muslimah Healing Journey';
   const dateFormatted = formatSafeDateStr(config.date);
@@ -225,7 +283,14 @@ export async function renderParticipantCardCanvas(
   const displayParticipantRole = participant.role || 'Peserta Workshop';
   const displayParticipantName = participant.name;
   const displayParticipantInst = participant.institution || '-';
-  const contactStr = [participant.email, participant.phone].filter(Boolean).join('  ·  ');
+  const cleanEmailForCard =
+    participant.email &&
+    participant.email !== '-' &&
+    !participant.email.toLowerCase().endsWith('@healyou.id')
+      ? participant.email
+      : '';
+  const cleanPhoneForCard = participant.phone ? `WA: ${participant.phone}` : '';
+  const contactStr = [cleanEmailForCard, cleanPhoneForCard].filter(Boolean).join('  ·  ');
 
   let nameLines = [displayParticipantName];
   let instLines = [displayParticipantInst];

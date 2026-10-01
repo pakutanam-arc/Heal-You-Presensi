@@ -164,11 +164,374 @@ const HEAL_YOU_GOLD_FOIL_EMBLEM_SVG = `<svg xmlns="http://www.w3.org/2000/svg" v
 
 const HEAL_YOU_GOLD_FOIL_EMBLEM_URI = `data:image/svg+xml;utf8,${encodeURIComponent(HEAL_YOU_GOLD_FOIL_EMBLEM_SVG)}`;
 
+const QR_SECRET_SALT = 'HEAL_YOU_QR_AUTH_2026_MHJ';
+
+/**
+ * Computes a deterministic 6-character hex security signature for a participant ID.
+ * Links Kartu Pengenal Barcode (#HY...) and E-Sertifikat QR (?verify_cert=...&sig=...)
+ */
+export function computeParticipantQrSignature(
+  participantId: string,
+  _workshopId = 'main'
+): string {
+  const cleanId = (participantId || 'HY-001').split('#HY')[0].trim().toUpperCase();
+  const payload = `${cleanId}|${QR_SECRET_SALT}`;
+
+  let h1 = 0xdeadbeef ^ payload.length;
+  let h2 = 0x41c6ce57 ^ payload.length;
+  for (let i = 0; i < payload.length; i++) {
+    const ch = payload.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 =
+    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 =
+    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+
+  const combined = 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  return combined.toString(16).toUpperCase().slice(-6).padStart(6, '0');
+}
+
+/**
+ * Builds the official signed QR string embedded inside Kartu Pengenal Peserta.
+ * Format: "HY-001#HY8F3A21"
+ */
+export function buildSignedParticipantQrValue(
+  participantId: string,
+  workshopId = 'main'
+): string {
+  const cleanId = (participantId || 'HY-001').split('#HY')[0].trim().toUpperCase();
+  const sig = computeParticipantQrSignature(cleanId, workshopId);
+  return `${cleanId}#HY${sig}`;
+}
+
+/**
+ * Returns a deterministic 0-based sequence index for any participant so their
+ * Certificate Serial Number (e.g. No. 001/HY-001/...) is 100% consistent across
+ * all pages (Admin Studio, Scanner Verification, Dashboard, and Participant Portal).
+ */
+export function getCanonicalParticipantSeqIndex(
+  participantOrId: Pick<Participant, 'id'> | string,
+  participants: Participant[] = []
+): number {
+  const rawId =
+    typeof participantOrId === 'string' ? participantOrId : participantOrId?.id || '';
+  const cleanId = rawId.split('#HY')[0].trim().toUpperCase();
+  const numMatch = cleanId.match(/^(?:HY|PSY)-0*(\d+)$/i);
+  if (numMatch && numMatch[1]) {
+    const parsedNum = parseInt(numMatch[1], 10);
+    if (!isNaN(parsedNum) && parsedNum >= 1) {
+      return parsedNum - 1;
+    }
+  }
+  if (participants.length > 0) {
+    const sorted = [...participants].sort((a, b) =>
+      a.id.localeCompare(b.id, undefined, { numeric: true })
+    );
+    const idx = sorted.findIndex((p) => p.id.toUpperCase() === cleanId);
+    if (idx >= 0) return idx;
+  }
+  return 0;
+}
+
+export function formatOfficialCertificateNumber(
+  participantOrId: Pick<Participant, 'id'> | string,
+  seqIndexOrParticipants: number | Participant[],
+  numberSuffix: string
+): string {
+  const rawId =
+    typeof participantOrId === 'string'
+      ? participantOrId
+      : participantOrId?.id || 'HY-001';
+  const cleanId = rawId.split('#HY')[0].trim().toUpperCase();
+  const seqIndex = Array.isArray(seqIndexOrParticipants)
+    ? getCanonicalParticipantSeqIndex(cleanId, seqIndexOrParticipants)
+    : seqIndexOrParticipants;
+  const safeSeq = Math.max(0, seqIndex);
+  return `No. ${String(safeSeq + 1).padStart(3, '0')}/${cleanId}${numberSuffix}`;
+}
+
 export function getShortSignatureName(fullName: string): string {
   return fullName
     .replace(/^(Dr\.|Hj\.|H\.|Prof\.|Ir\.|Ns\.|Dra\.|Drs\.)\s*/gi, '')
     .split(',')[0]
     .trim();
+}
+
+export function buildCertificateVerificationUrl(
+  participant: Participant,
+  seqIndex: number,
+  workshopId = 'main'
+): string {
+  const baseUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}${window.location.pathname}`
+      : '';
+  const cleanId = participant.id.split('#HY')[0].trim().toUpperCase();
+  const canonicalSeq = getCanonicalParticipantSeqIndex({ id: cleanId });
+  const finalSeq = typeof seqIndex === 'number' && !isNaN(seqIndex) ? seqIndex : canonicalSeq;
+  const sig = computeParticipantQrSignature(cleanId, workshopId);
+  const params = new URLSearchParams({
+    verify_cert: cleanId,
+    no: String(finalSeq + 1).padStart(3, '0'),
+    evt: workshopId,
+    sig,
+  });
+  return `${baseUrl}?${params.toString()}`;
+}
+
+export interface ParsedCertVerificationInput {
+  isExplicitCert: boolean;
+  isSignedIdCard?: boolean;
+  isSignedParticipantCard?: boolean;
+  participantId: string;
+  certSeqNo?: string;
+  workshopId?: string;
+  signature?: string;
+  qrSig?: string;
+  rawInput: string;
+}
+
+export function parseCertificateQrOrInput(rawInput: string): ParsedCertVerificationInput {
+  const clean = (rawInput || '').trim();
+  if (!clean) {
+    return { isExplicitCert: false, participantId: '', rawInput: '' };
+  }
+
+  // 0. Check if it's a signed Kartu Pengenal Barcode "HY-001#HY8F3A21"
+  if (clean.includes('#HY') && !/^https?:\/\//i.test(clean)) {
+    const parts = clean.split('#HY');
+    const baseId = (parts[0] || '').trim().toUpperCase().replace(/^PSY-/i, 'HY-');
+    const sig = (parts[1] || '').trim().toUpperCase();
+    return {
+      isExplicitCert: false,
+      isSignedIdCard: true,
+      isSignedParticipantCard: true,
+      participantId: baseId,
+      signature: sig || undefined,
+      qrSig: sig || undefined,
+      rawInput: clean,
+    };
+  }
+
+  // 1. Check if it's a URL with ?verify_cert=... or ?ticket=...
+  if (clean.includes('verify_cert=') || clean.includes('ticket=') || /^https?:\/\//i.test(clean)) {
+    try {
+      const urlObj = clean.startsWith('http')
+        ? new URL(clean)
+        : new URL(clean, 'https://healyou.local');
+      const verifyCertId = urlObj.searchParams.get('verify_cert');
+      if (verifyCertId) {
+        const cleanCertId = verifyCertId.split('#HY')[0].trim().toUpperCase();
+        const sigParam = urlObj.searchParams.get('sig')?.toUpperCase() || undefined;
+        return {
+          isExplicitCert: true,
+          participantId: cleanCertId,
+          certSeqNo: urlObj.searchParams.get('no') || undefined,
+          workshopId: urlObj.searchParams.get('evt') || undefined,
+          signature: sigParam,
+          qrSig: sigParam,
+          rawInput: clean,
+        };
+      }
+      const ticketId = urlObj.searchParams.get('ticket');
+      if (ticketId) {
+        const cleanTicketId = ticketId.split('#HY')[0].trim().toUpperCase();
+        return {
+          isExplicitCert: false,
+          isSignedIdCard: true,
+          isSignedParticipantCard: true,
+          participantId: cleanTicketId,
+          rawInput: clean,
+        };
+      }
+    } catch {
+      // Fallback regex below
+    }
+  }
+
+  // 2. Check if it's prefixed with HEALYOU-CERT: or CERT:
+  const prefixMatch = clean.match(/^(?:HEALYOU-CERT|CERT)[:\s]+([A-Za-z0-9\-]+)/i);
+  if (prefixMatch && prefixMatch[1]) {
+    return {
+      isExplicitCert: true,
+      participantId: prefixMatch[1].trim().toUpperCase(),
+      rawInput: clean,
+    };
+  }
+
+  // 3. Check if it's an official Certificate Number like "No. 001/HY-001/SERT-HY/MHJ/2026" or "001/HY-001/..."
+  const certNoMatch = clean.match(/(?:No\.?\s*)?(\d{1,4})\/([A-Za-z0-9\-]+)(?:\/|$)/i);
+  if (certNoMatch && certNoMatch[2]) {
+    return {
+      isExplicitCert: true,
+      participantId: certNoMatch[2].trim().toUpperCase(),
+      certSeqNo: certNoMatch[1].padStart(3, '0'),
+      rawInput: clean,
+    };
+  }
+
+  // 4. Check if HY-xxx appears anywhere inside the string
+  const idMatch = clean.match(/\b((?:HY|PSY)-[A-Za-z0-9\-]+)\b/i);
+  if (idMatch && idMatch[1]) {
+    return {
+      isExplicitCert: clean.toUpperCase().includes('SERT'),
+      participantId: idMatch[1].trim().toUpperCase().replace(/^PSY-/i, 'HY-'),
+      rawInput: clean,
+    };
+  }
+
+  return {
+    isExplicitCert: false,
+    participantId: clean.toUpperCase(),
+    rawInput: clean,
+  };
+}
+
+export const DEFAULT_CERT_SETTINGS: CertificateSettings = {
+  organizerHeader: '',
+  certTitle: 'SERTIFIKAT PENGHARGAAN',
+  certSubtitle: 'Diberikan dengan penuh apresiasi kepada:',
+  numberSuffix: '/SERT-HY/MHJ/2026',
+  city: 'Jakarta',
+  bodyIntro:
+    'Atas partisipasi aktif dan kehadirannya dalam kegiatan pemulihan batin & kesehatan mental:',
+  signer1Label: 'Mengetahui, Penyelenggara:',
+  signer1Name: 'Hj. Siti Sarah, M.Psi., Psikolog',
+  signer1Title: 'Ketua Penyelenggara · Muslimah Healing Journey',
+  signer1SigMode: 'TEXT',
+  signer1SignatureText: 'Siti Sarah',
+  enableSigner2: true,
+  signer2Name: 'Dr. Aisyah Putri, M.Psi., Psikolog',
+  signer2Title: 'Narasumber & Psikolog Utama',
+  signer2SigMode: 'TEXT',
+  signer2SignatureText: 'Aisyah Putri',
+};
+
+export function normalizeCertificateSettings(
+  raw?: Partial<CertificateSettings> | null
+): CertificateSettings {
+  if (!raw) return { ...DEFAULT_CERT_SETTINGS };
+  const s1Name = raw.signer1Name ?? DEFAULT_CERT_SETTINGS.signer1Name;
+  const s2Name = raw.signer2Name ?? DEFAULT_CERT_SETTINGS.signer2Name;
+  const s1Mode: SignatureMode =
+    raw.signer1SigMode === 'IMAGE' || raw.signer1SigMode === 'NONE' || raw.signer1SigMode === 'TEXT'
+      ? raw.signer1SigMode
+      : raw.signer1SignatureDataUrl
+        ? 'IMAGE'
+        : 'TEXT';
+  const s2Mode: SignatureMode =
+    raw.signer2SigMode === 'IMAGE' || raw.signer2SigMode === 'NONE' || raw.signer2SigMode === 'TEXT'
+      ? raw.signer2SigMode
+      : raw.signer2SignatureDataUrl
+        ? 'IMAGE'
+        : 'TEXT';
+
+  return {
+    organizerHeader: raw.organizerHeader ?? DEFAULT_CERT_SETTINGS.organizerHeader,
+    certTitle: raw.certTitle ?? DEFAULT_CERT_SETTINGS.certTitle,
+    certSubtitle: raw.certSubtitle ?? DEFAULT_CERT_SETTINGS.certSubtitle,
+    numberSuffix: raw.numberSuffix ?? DEFAULT_CERT_SETTINGS.numberSuffix,
+    city: raw.city ?? DEFAULT_CERT_SETTINGS.city,
+    bodyIntro: raw.bodyIntro ?? DEFAULT_CERT_SETTINGS.bodyIntro,
+    signer1Label: raw.signer1Label ?? DEFAULT_CERT_SETTINGS.signer1Label,
+    signer1Name: s1Name,
+    signer1Title: raw.signer1Title ?? DEFAULT_CERT_SETTINGS.signer1Title,
+    signer1SigMode: s1Mode,
+    signer1SignatureText: raw.signer1SignatureText ?? getShortSignatureName(s1Name),
+    signer1SignatureDataUrl: raw.signer1SignatureDataUrl || undefined,
+    enableSigner2: raw.enableSigner2 !== undefined ? Boolean(raw.enableSigner2) : true,
+    signer2Name: s2Name,
+    signer2Title: raw.signer2Title ?? DEFAULT_CERT_SETTINGS.signer2Title,
+    signer2SigMode: s2Mode,
+    signer2SignatureText: raw.signer2SignatureText ?? getShortSignatureName(s2Name),
+    signer2SignatureDataUrl: raw.signer2SignatureDataUrl || undefined,
+    customTemplateDataUrl: raw.customTemplateDataUrl || undefined,
+  };
+}
+
+/**
+ * Downscales and optimizes an uploaded/drawn signature PNG so it fits safely inside Firestore's
+ * 150,000-character field limit while preserving alpha transparency.
+ */
+export async function compressSignatureDataUrl(
+  dataUrl: string,
+  maxWidth = 480,
+  maxHeight = 180
+): Promise<string> {
+  if (!dataUrl) return '';
+  try {
+    const img = await loadImageElement(dataUrl);
+    let w = img.naturalWidth || maxWidth;
+    let h = img.naturalHeight || maxHeight;
+    const scale = Math.min(1, maxWidth / w, maxHeight / h);
+    w = Math.max(1, Math.round(w * scale));
+    h = Math.max(1, Math.round(h * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return dataUrl.slice(0, 149000);
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    let out = canvas.toDataURL('image/png');
+    if (out.length > 145000) {
+      const smallerCanvas = document.createElement('canvas');
+      smallerCanvas.width = Math.max(1, Math.round(w * 0.65));
+      smallerCanvas.height = Math.max(1, Math.round(h * 0.65));
+      const sCtx = smallerCanvas.getContext('2d');
+      if (sCtx) {
+        sCtx.clearRect(0, 0, smallerCanvas.width, smallerCanvas.height);
+        sCtx.drawImage(img, 0, 0, smallerCanvas.width, smallerCanvas.height);
+        out = smallerCanvas.toDataURL('image/png');
+      }
+    }
+    return out.length <= 150000 ? out : dataUrl.slice(0, 150000);
+  } catch {
+    return dataUrl.slice(0, 150000);
+  }
+}
+
+/**
+ * Downscales and compresses an uploaded reference certificate template image so it fits safely
+ * inside Firestore's 450,000-character field limit.
+ */
+export async function compressTemplateDataUrl(
+  dataUrl: string,
+  maxWidth = 1400,
+  maxHeight = 990
+): Promise<string> {
+  if (!dataUrl) return '';
+  try {
+    const img = await loadImageElement(dataUrl);
+    let w = img.naturalWidth || maxWidth;
+    let h = img.naturalHeight || maxHeight;
+    const scale = Math.min(1, maxWidth / w, maxHeight / h);
+    w = Math.max(1, Math.round(w * scale));
+    h = Math.max(1, Math.round(h * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return dataUrl.slice(0, 445000);
+    ctx.fillStyle = '#FBF9F3';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    let out = canvas.toDataURL('image/jpeg', 0.8);
+    if (out.length > 440000) {
+      out = canvas.toDataURL('image/jpeg', 0.65);
+    }
+    return out.length <= 450000 ? out : '';
+  } catch {
+    return dataUrl.length <= 450000 ? dataUrl : '';
+  }
 }
 
 function drawRoundedRect(
@@ -677,7 +1040,16 @@ export async function renderBotanicalCertificateCanvas(
     'Muslimah Healing Journey';
   const tagline = config.tagline || "Let's Heal";
   const eventLabel = config.eventLabel || 'Agenda Workshop Psikologi';
-  const certNumber = `No. ${String(seqIndex + 1).padStart(3, '0')}/${participant.id.toUpperCase()}${settings.numberSuffix}`;
+  const cleanParticipantId = participant.id.split('#HY')[0].trim().toUpperCase();
+  const canonicalSeq =
+    typeof seqIndex === 'number' && !isNaN(seqIndex)
+      ? Math.max(0, seqIndex)
+      : getCanonicalParticipantSeqIndex(participant);
+  const certNumber = formatOfficialCertificateNumber(
+    participant,
+    canonicalSeq,
+    settings.numberSuffix
+  );
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
@@ -802,9 +1174,13 @@ export async function renderBotanicalCertificateCanvas(
   const issueDateText = `${settings.city}, ${formattedDate}`;
 
   // Center Double-Framed QR Code Medallion at (710, 820)
-  const qrCanvas = document.getElementById(
-    `global-qr-${participant.id}`
-  ) as HTMLCanvasElement | null;
+  const qrCanvas =
+    (document.getElementById(`global-cert-qr-${cleanParticipantId}`) as HTMLCanvasElement | null) ||
+    (document.getElementById(`portal-cert-qr-${cleanParticipantId}`) as HTMLCanvasElement | null) ||
+    (document.getElementById(`modal-cert-qr-${cleanParticipantId}`) as HTMLCanvasElement | null) ||
+    (document.getElementById(`global-qr-${cleanParticipantId}`) as HTMLCanvasElement | null) ||
+    (document.getElementById(`portal-ver-qr-${cleanParticipantId}`) as HTMLCanvasElement | null) ||
+    (document.getElementById(`portal-reg-qr-${cleanParticipantId}`) as HTMLCanvasElement | null);
 
   const qrCenterX = 710;
   const qrCenterY = 820;
@@ -827,10 +1203,15 @@ export async function renderBotanicalCertificateCanvas(
     ctx.drawImage(qrCanvas, qrCenterX - 46, qrCenterY - 46, 92, 92);
   }
 
+  const linkedSig = computeParticipantQrSignature(cleanParticipantId, 'main');
   ctx.fillStyle = '#2B203D';
-  ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
-  ctx.letterSpacing = '1.6px';
-  ctx.fillText(`TERVERIFIKASI  ·  ${participant.id}`, qrCenterX, qrCenterY + 78);
+  ctx.font = '600 10.5px "Plus Jakarta Sans", sans-serif';
+  ctx.letterSpacing = '1.4px';
+  ctx.fillText(
+    `TERVERIFIKASI  ·  ${cleanParticipantId}  ·  #HY${linkedSig}`,
+    qrCenterX,
+    qrCenterY + 78
+  );
   ctx.letterSpacing = '0px';
 
   // Signer Column Helper
