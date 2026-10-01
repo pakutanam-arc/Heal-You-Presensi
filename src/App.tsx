@@ -1,10 +1,14 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { QRCodeCanvas } from 'qrcode.react';
 import { AppProvider, useAppContext } from './store';
+import { Participant } from './types';
 import { Dashboard } from './components/Dashboard';
 import { Scanner } from './components/Scanner';
 import { Registration } from './components/Registration';
 import { WelcomeDisplay } from './components/WelcomeDisplay';
+import { DigitalTicketView } from './components/DigitalTicketView';
 import { HealYouLogo } from './components/HealYouLogo';
+import { parseDigitalTicketFromUrl } from './lib/whatsapp';
 import {
   LayoutDashboard,
   Calendar,
@@ -53,6 +57,7 @@ function AppContent() {
     updateConfig,
     setSelectedParticipantId,
     checkIn,
+    resetAttendance,
     resetData,
     cloudUser,
     isAdmin,
@@ -64,6 +69,7 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState<
     'dashboard' | 'scanner' | 'welcome' | 'registration'
   >('dashboard');
+  const [digitalTicketData, setDigitalTicketData] = useState(() => parseDigitalTicketFromUrl());
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [isEventsMenuOpen, setIsEventsMenuOpen] = useState(false);
   const [isCreatingNewEvent, setIsCreatingNewEvent] = useState(false);
@@ -211,8 +217,41 @@ function AppContent() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#faf9fe]">
-      {/* Header */}
-      <header className="bg-white border-b border-purple-100 sticky top-0 z-30">
+      {/* Hidden QR Code Canvas Registry so any participant's PNG ID Card can be generated & copied to Clipboard anywhere */}
+      <div className="sr-only pointer-events-none" aria-hidden="true">
+        {participants.map((p) => (
+          <QRCodeCanvas
+            key={p.id}
+            id={`global-qr-${p.id}`}
+            value={p.id}
+            size={320}
+            level="H"
+            minVersion={4}
+            marginSize={2}
+            fgColor="#261742"
+            bgColor="#ffffff"
+          />
+        ))}
+      </div>
+
+      {digitalTicketData ? (
+        <DigitalTicketView
+          participant={
+            participants.find((p) => p.id === digitalTicketData.participant.id) ||
+            digitalTicketData.participant
+          }
+          config={digitalTicketData.config}
+          onExitTicketMode={() => {
+            setDigitalTicketData(null);
+            if (typeof window !== 'undefined' && window.location.search.includes('ticket=')) {
+              window.history.replaceState({}, '', window.location.pathname);
+            }
+          }}
+        />
+      ) : (
+        <>
+          {/* Header */}
+          <header className="bg-white border-b border-purple-100 sticky top-0 z-30">
         <div className="w-full max-w-[1680px] mx-auto px-3 sm:px-6 lg:px-8 min-h-16 py-2 flex flex-wrap xl:flex-nowrap items-center justify-between gap-2 sm:gap-3">
           {/* Left: Brand + Desktop Navigation */}
           <div className="flex items-center gap-3 xl:gap-6 min-w-0">
@@ -861,7 +900,11 @@ function AppContent() {
         {/* VIEW 1: REGISTRATION & COUTURE ID CARD STUDIO */}
         {activeTab === 'registration' && canManageParticipants && (
           <div className="flex-1 min-w-0">
-            <Registration />
+            <Registration
+              onPreviewDigitalTicket={(p: Participant) =>
+                setDigitalTicketData({ participant: p, config })
+              }
+            />
           </div>
         )}
 
@@ -914,6 +957,17 @@ function AppContent() {
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
+                    {kioskData.checkedIn.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setIsConfirmingReset(true)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-xs font-semibold text-rose-700 transition-colors cursor-pointer"
+                        title="Reset status kehadiran seluruh peserta"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Reset Kehadiran</span>
+                      </button>
+                    )}
                     <span className="px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-100 text-xs font-semibold text-[#4c3575]">
                       {kioskData.checkedIn.length} / {kioskData.total} Hadir ({kioskData.rate}%)
                     </span>
@@ -1094,11 +1148,12 @@ function AppContent() {
             </div>
 
             <p className="mt-4 text-sm text-slate-600 leading-relaxed">
-              Daftar peserta dan status kehadiran pada acara <strong>{config.name}</strong> akan
-              dikembalikan ke data bawaan awal. Acara lain di riwayat tidak akan terpengaruh.
+              Pilih jenis reset untuk acara <strong>{config.name}</strong>: Anda dapat mereset{' '}
+              <strong>hanya status kehadiran peserta</strong> (nama peserta &amp; pengaturan acara
+              tetap aman), atau mengembalikan seluruh data ke sampel awal.
             </p>
 
-            <div className="mt-6 flex items-center justify-end gap-2.5">
+            <div className="mt-6 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setIsConfirmingReset(false)}
@@ -1109,17 +1164,32 @@ function AppContent() {
               <button
                 type="button"
                 onClick={() => {
-                  resetData();
+                  resetAttendance();
                   setIsConfirmingReset(false);
                 }}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-colors cursor-pointer shadow-2xs"
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-[#5e438f] hover:bg-[#4c3575] rounded-xl transition-colors cursor-pointer shadow-2xs"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Ya, Reset Acara Ini
+                Reset Kehadiran Saja
               </button>
+              {canManageParticipants && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetData();
+                    setIsConfirmingReset(false);
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Reset Semua ke Awal
+                </button>
+              )}
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

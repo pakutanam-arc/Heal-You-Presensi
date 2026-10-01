@@ -79,6 +79,7 @@ interface AppState {
   updateParticipant: (id: string, updates: Partial<Participant>) => void;
   deleteParticipant: (id: string) => void;
   updateConfig: (updates: Partial<WorkshopConfig>) => void;
+  resetAttendance: () => void;
   resetData: () => void;
   cloudUser: User | null;
   isAdmin: boolean;
@@ -820,6 +821,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const resetAttendance = () => {
+    const attendedList = participants.filter((p) => p.status !== 'PENDING' || p.checkInTime);
+    setParticipants((prev) =>
+      prev.map((p) => ({
+        ...p,
+        status: 'PENDING',
+        checkInTime: undefined,
+      }))
+    );
+
+    if (cloudUser) {
+      for (const p of attendedList) {
+        void syncParticipantUpdateToCloud(p.id, {
+          status: 'PENDING',
+          checkInTime: '',
+        });
+      }
+    }
+  };
+
   const resetData = () => {
     if (!canManageParticipants) return;
     const curEventId = activeWorkshopIdRef.current;
@@ -877,6 +898,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateParticipant,
         deleteParticipant,
         updateConfig,
+        resetAttendance,
         resetData,
         cloudUser,
         isAdmin,

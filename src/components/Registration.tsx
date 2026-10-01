@@ -20,13 +20,24 @@ import {
   Layers,
   MessageCircle,
   Copy,
+  Image as ImageIcon,
+  Share2,
+  ExternalLink,
+  Award,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { buildWhatsAppUrl, buildWhatsAppMessage } from '../lib/whatsapp';
+import {
+  buildWhatsAppUrl,
+  buildWhatsAppMessage,
+  buildDigitalTicketUrl,
+  copyParticipantCardToClipboard,
+  shareParticipantCardFile,
+} from '../lib/whatsapp';
 import { format } from 'date-fns';
 import { HealYouLogo, HEAL_YOU_DATA_URI, loadLogoImage } from './HealYouLogo';
 import { BatchPrintModal } from './BatchPrintModal';
 import { WhatsAppBroadcastModal } from './WhatsAppBroadcastModal';
+import { CertificateModal } from './CertificateModal';
 
 function formatSafeDate(dateStr: string, pattern: string) {
   try {
@@ -104,7 +115,9 @@ function wrapCanvasLines(
   return lines;
 }
 
-export const Registration: React.FC = () => {
+export const Registration: React.FC<{
+  onPreviewDigitalTicket?: (participant: Participant) => void;
+}> = ({ onPreviewDigitalTicket }) => {
   const {
     participants,
     config,
@@ -152,7 +165,9 @@ export const Registration: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [isWaBroadcastOpen, setIsWaBroadcastOpen] = useState(false);
+  const [isCertificateModalOpen, setIsCertificateModalOpen] = useState(false);
   const [copiedWa, setCopiedWa] = useState(false);
+  const [copiedCardImg, setCopiedCardImg] = useState(false);
 
   const handleCopyWaMessage = async (p: Participant) => {
     try {
@@ -162,6 +177,31 @@ export const Registration: React.FC = () => {
     } catch {
       // Ignore clipboard error
     }
+  };
+
+  const handleCopyCardImageOnly = async (p: Participant, explicitQr?: HTMLCanvasElement | null) => {
+    const ok = await copyParticipantCardToClipboard(p, config, explicitQr);
+    if (ok) {
+      setCopiedCardImg(true);
+      showToast(
+        `Gambar Kartu PNG "${p.name}" disalin ke Clipboard! Tinggal tekan Ctrl+V (Paste) di WhatsApp.`
+      );
+      window.setTimeout(() => setCopiedCardImg(false), 3000);
+    } else {
+      showToast('Browser ini tidak mendukung salin gambar otomatis; silakan klik Unduh Kartu PNG.');
+    }
+  };
+
+  const handleSendWaWithAutoCopyCard = (p: Participant, explicitQr?: HTMLCanvasElement | null) => {
+    void copyParticipantCardToClipboard(p, config, explicitQr).then((ok) => {
+      if (ok) {
+        setCopiedCardImg(true);
+        showToast(
+          `Gambar Kartu PNG "${p.name}" otomatis disalin ke Clipboard! Tekan Ctrl+V (Paste) saat ruang chat WhatsApp terbuka.`
+        );
+        window.setTimeout(() => setCopiedCardImg(false), 4000);
+      }
+    });
   };
 
   const qrContainerRef = useRef<HTMLDivElement>(null);
@@ -1619,16 +1659,19 @@ export const Registration: React.FC = () => {
                       href={buildWhatsAppUrl(p, config)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSendWaWithAutoCopyCard(p);
+                      }}
                       title={
                         p.phone
-                          ? `Kirim info tiket via WhatsApp (${p.phone})`
-                          : 'Kirim info tiket via WhatsApp'
+                          ? `Kirim info tiket via WhatsApp (${p.phone}) & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)`
+                          : 'Kirim info tiket via WhatsApp & otomatis salin gambar Kartu PNG ke Clipboard (Ctrl+V)'
                       }
                       className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200/70 rounded-lg transition-colors cursor-pointer"
                     >
                       <MessageCircle className="w-3 h-3" />
-                      Kirim WA
+                      Kirim WA + Kartu
                     </a>
                     <button
                       type="button"
@@ -1662,6 +1705,22 @@ export const Registration: React.FC = () => {
       {/* Right Column: Interactive Couture Editorial Heal You ID Badge */}
       <div className="lg:col-span-5">
         <div className="sticky top-22 flex flex-col items-center">
+          {/* Quick Switcher between ID Card Preview and E-Certificate Preview */}
+          <div className="w-full max-w-md mb-3 p-1 bg-purple-100/70 border border-purple-200/80 rounded-2xl grid grid-cols-2 gap-1.5">
+            <div className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-white text-[#4c3575] text-xs font-bold shadow-2xs">
+              <Sparkles className="w-3.5 h-3.5 text-[#5e438f]" />
+              <span>Pratinjau Kartu QR</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsCertificateModalOpen(true)}
+              className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-amber-50/90 hover:bg-amber-100 text-amber-900 border border-amber-200/80 text-xs font-bold transition-colors cursor-pointer"
+            >
+              <Award className="w-3.5 h-3.5 text-amber-600" />
+              <span>Pratinjau E-Sertifikat</span>
+            </button>
+          </div>
+
           {selectedParticipant ? (
             <div
               className="w-full max-w-md rounded-[36px] p-5 sm:p-6 shadow-xl relative overflow-hidden"
@@ -1861,44 +1920,137 @@ export const Registration: React.FC = () => {
                   href={buildWhatsAppUrl(selectedParticipant, config)}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={() =>
+                    handleSendWaWithAutoCopyCard(
+                      selectedParticipant,
+                      qrContainerRef.current?.querySelector('canvas')
+                    )
+                  }
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-2xs transition-colors cursor-pointer"
                   title={
                     selectedParticipant.phone
-                      ? `Buka chat WhatsApp ke ${selectedParticipant.phone}`
-                      : 'Kirim undangan & detail kartu via WhatsApp'
+                      ? `Buka chat WhatsApp ke ${selectedParticipant.phone} & otomatis salin Gambar Kartu PNG ke Clipboard (Ctrl+V)`
+                      : 'Kirim undangan via WhatsApp & otomatis salin Gambar Kartu PNG ke Clipboard (Ctrl+V)'
                   }
                 >
                   <MessageCircle className="w-4 h-4" />
-                  1-Klik Kirim via WhatsApp
+                  <span>1-Klik Kirim WA + Salin Kartu PNG</span>
                 </a>
                 <button
                   type="button"
-                  onClick={() => void handleCopyWaMessage(selectedParticipant)}
+                  onClick={() =>
+                    void handleCopyCardImageOnly(
+                      selectedParticipant,
+                      qrContainerRef.current?.querySelector('canvas')
+                    )
+                  }
                   className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-medium text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
-                  title="Salin teks pesan undangan WhatsApp ke clipboard"
+                  title="Salin gambar Kartu PNG ke Clipboard (tinggal tekan Ctrl+V di WhatsApp)"
+                >
+                  {copiedCardImg ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Kartu Tersalin!</span>
+                    </>
+                  ) : (
+                    <>
+                      <ImageIcon className="w-3.5 h-3.5" />
+                      <span>Salin Gambar PNG</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Extra Row: Copy WA Text / Share File PNG (Mobile) / Preview Digital Ticket Link */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleCopyWaMessage(selectedParticipant)}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl font-medium text-xs transition-colors cursor-pointer"
+                  title="Salin teks pesan undangan WhatsApp beserta Link E-Tiket Digital"
                 >
                   {copiedWa ? (
                     <>
                       <Check className="w-3.5 h-3.5 text-emerald-600" />
-                      Teks Tersalin!
+                      <span className="text-emerald-700 font-semibold">Teks + Link Tersalin!</span>
                     </>
                   ) : (
                     <>
-                      <Copy className="w-3.5 h-3.5" />
-                      Salin Pesan WA
+                      <Copy className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Salin Teks + Link Tiket</span>
                     </>
                   )}
                 </button>
+
+                {typeof navigator !== 'undefined' && 'share' in navigator && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void shareParticipantCardFile(
+                        selectedParticipant,
+                        config,
+                        qrContainerRef.current?.querySelector('canvas')
+                      )
+                    }
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
+                    title="Bagikan file gambar Kartu PNG langsung ke aplikasi WhatsApp di HP"
+                  >
+                    <Share2 className="w-3.5 h-3.5 text-[#5e438f]" />
+                    <span>Share File PNG</span>
+                  </button>
+                )}
+
+                {onPreviewDigitalTicket ? (
+                  <button
+                    type="button"
+                    onClick={() => onPreviewDigitalTicket(selectedParticipant)}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
+                    title="Lihat tampilan halaman E-Tiket Digital peserta"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Lihat E-Tiket</span>
+                  </button>
+                ) : (
+                  <a
+                    href={buildDigitalTicketUrl(selectedParticipant, config)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-purple-50 text-[#5e438f] border border-purple-200 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
+                    title="Buka halaman E-Tiket Digital peserta"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Lihat E-Tiket</span>
+                  </a>
+                )}
+              </div>
+
+              <div className="px-3 py-2 rounded-xl bg-emerald-50/70 border border-emerald-200/70 text-[11px] text-emerald-900 leading-relaxed">
+                <strong>Tips Kirim Gambar Kartu di WA:</strong> Saat Anda klik{' '}
+                <strong>1-Klik Kirim WA + Salin Kartu PNG</strong>, gambar kartu otomatis disalin ke{' '}
+                <em>Clipboard</em>. Begitu chat WhatsApp terbuka, tekan{' '}
+                <kbd className="px-1 py-0.5 bg-white border border-emerald-300 rounded font-mono font-bold">
+                  Ctrl + V
+                </kbd>{' '}
+                untuk menempelkan gambar Kartu QR beserta teks undangan &amp; tautan E-Tiket Digital!
               </div>
 
               <div className="flex flex-col sm:flex-row gap-2.5">
                 <button
                   type="button"
                   onClick={() => setIsBatchModalOpen(true)}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer"
+                  className="flex-1 flex items-center justify-center gap-2 px-3.5 py-2.5 bg-purple-50 hover:bg-purple-100 text-[#4c3575] border border-purple-200/80 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer"
                 >
                   <Layers className="w-4 h-4 text-[#5e438f]" />
-                  Cetak Semua ({participants.length} Kartu A4)
+                  Cetak Kartu ({participants.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCertificateModalOpen(true)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer shrink-0"
+                  title="Buka Studio E-Sertifikat Otomatis bagi peserta yang hadir"
+                >
+                  <Award className="w-4 h-4 text-amber-600" />
+                  E-Sertifikat
                 </button>
                 <button
                   type="button"
@@ -1907,7 +2059,7 @@ export const Registration: React.FC = () => {
                   title="Kirim ke semua nomor WhatsApp peserta secara beruntun"
                 >
                   <MessageCircle className="w-4 h-4 text-teal-600" />
-                  Broadcast Semua WA
+                  Broadcast WA
                 </button>
               </div>
             </div>
@@ -1927,6 +2079,14 @@ export const Registration: React.FC = () => {
         onClose={() => setIsWaBroadcastOpen(false)}
         participants={participants}
         config={config}
+      />
+
+      <CertificateModal
+        isOpen={isCertificateModalOpen}
+        onClose={() => setIsCertificateModalOpen(false)}
+        participants={participants}
+        config={config}
+        initialParticipantId={selectedParticipant?.id}
       />
     </div>
   );

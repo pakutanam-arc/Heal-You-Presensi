@@ -1,6 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { Participant, WorkshopConfig } from '../types';
-import { normalizeWhatsAppPhone, buildWhatsAppMessage } from '../lib/whatsapp';
+import {
+  normalizeWhatsAppPhone,
+  buildWhatsAppMessage,
+  copyParticipantCardToClipboard,
+  shareParticipantCardFile,
+} from '../lib/whatsapp';
 import {
   MessageCircle,
   X,
@@ -11,6 +16,8 @@ import {
   Users,
   AlertCircle,
   ExternalLink,
+  Image as ImageIcon,
+  Share2,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -32,6 +39,7 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
   const [targetFilter, setTargetFilter] = useState<TargetFilter>('ALL');
   const [sentIds, setSentIds] = useState<Record<string, boolean>>({});
   const [copiedNumbers, setCopiedNumbers] = useState(false);
+  const [cardCopiedNotice, setCardCopiedNotice] = useState<string | null>(null);
 
   const recipients = useMemo(() => {
     return participants
@@ -70,6 +78,21 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
     return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
   };
 
+  const handleSendWithCardCopy = (p: Participant) => {
+    setSentIds((prev) => ({ ...prev, [p.id]: true }));
+    void copyParticipantCardToClipboard(p, config).then((copied) => {
+      if (copied) {
+        setCardCopiedNotice(
+          `Gambar Kartu PNG "${p.name}" (${p.id}) otomatis disalin ke Clipboard! Tekan Ctrl+V (Paste) di ruang chat WhatsApp untuk melampirkan gambar kartunya.`
+        );
+      } else {
+        setCardCopiedNotice(
+          `Pesan WA & Link Tiket Digital untuk "${p.name}" (${p.id}) siap dikirim.`
+        );
+      }
+    });
+  };
+
   const handleCopyAllNumbers = async () => {
     const list = recipients.map((r) => r.cleanPhone).join(', ');
     if (!list) return;
@@ -93,11 +116,11 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                Asisten Broadcast WhatsApp Massal
+                Asisten Broadcast WhatsApp &amp; Kartu PNG
               </h3>
               <p className="text-xs text-slate-600 mt-0.5">
-                Kirim pesan tiket &amp; pengingat beruntun ke seluruh peserta yang memiliki nomor
-                WA
+                Otomatis menyalin Gambar Kartu PNG ke Clipboard (Ctrl+V) &amp; menyertakan Link
+                Tiket Digital
               </p>
             </div>
           </div>
@@ -111,16 +134,25 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
         </div>
 
         {/* Info Banner & Filter Controls */}
-        <div className="p-5 border-b border-slate-100 space-y-4">
-          <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/80 flex items-start gap-2.5 text-xs text-amber-900">
-            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+        <div className="p-5 border-b border-slate-100 space-y-3.5">
+          <div className="p-3 rounded-xl bg-purple-50/80 border border-purple-200/80 flex items-start gap-2.5 text-xs text-[#2b1b47]">
+            <ImageIcon className="w-4 h-4 text-[#5e438f] shrink-0 mt-0.5" />
             <div className="leading-relaxed">
-              <strong>Cara Kerja Anti-Blokir WhatsApp:</strong> Demi keamanan akun WhatsApp Anda
-              agar tidak diblokir sebagai spam, gunakan tombol{' '}
-              <strong>&ldquo;Kirim ke Peserta Berikutnya&rdquo;</strong> di bawah untuk membuka
-              chat WA satu per satu secara berurutan dengan 1 klik.
+              <strong>Cara Kirim Gambar Kartu PNG + Teks di WhatsApp:</strong> Setiap kali Anda
+              mengklik tombol <strong>Kirim WA</strong>, aplikasi <strong>otomatis menyalin Gambar Kartu PNG peserta ke Clipboard</strong> sekaligus menyertakan <strong>Link Tiket Digital</strong>. Saat chat WhatsApp terbuka, cukup tekan{' '}
+              <kbd className="px-1.5 py-0.5 bg-white border border-purple-200 rounded font-mono text-[11px] font-bold">
+                Ctrl + V
+              </kbd>{' '}
+              lalu <strong>Enter</strong>!
             </div>
           </div>
+
+          {cardCopiedNotice && (
+            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center gap-2.5 text-xs font-medium text-emerald-900">
+              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{cardCopiedNotice}</span>
+            </div>
+          )}
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -170,7 +202,10 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
               {sentCount > 0 && (
                 <button
                   type="button"
-                  onClick={() => setSentIds({})}
+                  onClick={() => {
+                    setSentIds({});
+                    setCardCopiedNotice(null);
+                  }}
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                   title="Ulangi status pengiriman dari awal"
                 >
@@ -198,7 +233,9 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
                       {nextUnsent.participant.phone})
                     </>
                   ) : (
-                    <strong>Seluruh peserta dalam daftar ini sudah dibuka chat WhatsApp-nya!</strong>
+                    <strong>
+                      Seluruh peserta dalam daftar ini sudah dibuka chat WhatsApp-nya!
+                    </strong>
                   )}
                 </p>
               </div>
@@ -208,13 +245,13 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
                   href={buildCustomWaUrl(nextUnsent.participant, nextUnsent.cleanPhone)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  onClick={() =>
-                    setSentIds((prev) => ({ ...prev, [nextUnsent.participant.id]: true }))
-                  }
+                  onClick={() => handleSendWithCardCopy(nextUnsent.participant)}
                   className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-colors cursor-pointer shrink-0"
                 >
                   <Send className="w-4 h-4" />
-                  Kirim ke Peserta Berikutnya ({sentCount + 1}/{recipients.length})
+                  <span>
+                    Kirim + Salin Kartu ({sentCount + 1}/{recipients.length})
+                  </span>
                 </a>
               ) : (
                 <span className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-semibold shrink-0">
@@ -235,7 +272,7 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
                 <div
                   key={p.id}
                   className={cn(
-                    'px-5 py-3 flex items-center justify-between gap-3 transition-colors',
+                    'px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-colors',
                     isSent ? 'bg-emerald-50/30' : 'hover:bg-slate-50'
                   )}
                 >
@@ -257,27 +294,44 @@ export const WhatsAppBroadcastModal: React.FC<WhatsAppBroadcastModalProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     {isSent && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800">
                         <Check className="w-3 h-3" />
-                        Sudah Dibuka
+                        Terkirim
                       </span>
                     )}
+
+                    {typeof navigator !== 'undefined' && 'share' in navigator && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSentIds((prev) => ({ ...prev, [p.id]: true }));
+                          void shareParticipantCardFile(p, config);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-[#5e438f] bg-purple-50 hover:bg-purple-100 border border-purple-200/70 transition-colors cursor-pointer"
+                        title="Bagikan file gambar Kartu PNG langsung ke aplikasi WhatsApp (HP)"
+                      >
+                        <Share2 className="w-3 h-3" />
+                        <span>File PNG</span>
+                      </button>
+                    )}
+
                     <a
                       href={buildCustomWaUrl(p, cleanPhone)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onClick={() => setSentIds((prev) => ({ ...prev, [p.id]: true }))}
+                      onClick={() => handleSendWithCardCopy(p)}
                       className={cn(
                         'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer',
                         isSent
                           ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                           : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
                       )}
+                      title="Buka chat WhatsApp & otomatis salin gambar Kartu PNG ke Clipboard (tinggal tekan Ctrl+V)"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
-                      {isSent ? 'Kirim Ulang' : 'Kirim WA'}
+                      {isSent ? 'Kirim Ulang + Kartu' : 'Kirim WA + Kartu'}
                     </a>
                   </div>
                 </div>
